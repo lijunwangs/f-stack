@@ -1,0 +1,55 @@
+# Single-box POC config: F-Stack on a TAP device, no physical NIC touched.
+#
+# --no-pci is deliberate: DPDK never probes or binds a real interface, so the
+# management NIC cannot be taken over. Nothing here needs IOMMU or vfio.
+#
+# Copy to config.ini and adjust lcore_mask. Do not commit config.ini.
+
+[dpdk]
+# One lcore for the POC. Bit 1 = core 1; keep core 0 for the OS.
+lcore_mask=2
+channel=4
+
+# Virtual TAP port instead of a NIC. The kernel sees an interface named ffm0.
+extra_eal_args=--vdev=net_tap0,iface=ffm0 --no-pci
+
+# TAP offers no checksum offload.
+tx_csum_offoad_skip=1
+
+# Latency settings the design calls for; the shipped default of 100 would add
+# up to 100us per hop, twice per round trip.
+idle_sleep=0
+pkt_tx_delay=0
+
+promiscuous=1
+numa_on=1
+port_list=0
+
+# If hugepages are not configured on the box, uncomment this instead of
+# reserving them. Slower and memory-limited, but fine for a POC.
+#no_huge=1
+#memory=512
+
+[port0]
+# F-Stack's side of the TAP link. The kernel takes .1, F-Stack takes .2.
+addr=10.99.0.2
+netmask=255.255.255.0
+broadcast=10.99.0.255
+gateway=10.99.0.1
+
+[freebsd.boot]
+hz=1000
+fd_reserve=1024
+kern.ipc.maxsockets=262144
+net.inet.tcp.tcbhashsize=65536
+
+[freebsd.sysctl]
+kern.ipc.somaxconn=32768
+kern.ipc.maxsockbuf=16777216
+net.inet.tcp.sendspace=16384
+net.inet.tcp.recvspace=8192
+net.inet.tcp.delayed_ack=0
+net.inet.tcp.sendbuf_auto=1
+net.inet.tcp.recvbuf_auto=1
+net.inet.tcp.fast_finwait2_recycle=1
+net.inet.tcp.msl=2000

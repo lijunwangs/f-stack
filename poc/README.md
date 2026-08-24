@@ -79,19 +79,38 @@ curl --cacert poc_ca.pem --resolve <origin-host>:8443:<gateway-ip> \
 A request whose body contains the pattern should be dropped, and the counters
 should show the match.
 
-### No link on the DPDK port?
+### No cable, no public address, one box
 
-The POC does not need a cable. Give F-Stack a TAP device and drive it from the
-same host:
+The POC needs neither a link nor outbound connectivity. `config.ini.sample`
+runs F-Stack on a TAP device with `--no-pci`, so DPDK never probes a physical
+interface and the management NIC cannot be taken over -- and no IOMMU, vfio or
+NIC binding is involved.
 
-```ini
-[dpdk]
-extra_eal_args=--vdev=net_tap0,iface=ffm0
-tx_csum_offoad_skip=1
+The one subtlety: F-Stack runs its own IP stack, so `ff_connect` cannot reach a
+service on the kernel's `127.0.0.1`. The origin has to sit on the kernel side
+of the TAP with its own address. The link gets two: the kernel takes
+`10.99.0.1`, F-Stack takes `10.99.0.2`.
+
+```sh
+cp config.ini.sample config.ini        # then set lcore_mask
+./run_single_box.sh                    # starts an origin, prints the rest
+
+# in another shell, once the TAP device appears:
+sudo ip addr add 10.99.0.1/24 dev ffm0
+sudo ip link set ffm0 up
 ```
 
-Throughput will be poor; that is fine, since the POC's gate is functional and
-its performance numbers come from M0a and later from real hardware.
+Drive it with `--resolve` rather than an IP URL: the POC keys everything on
+SNI, and clients do not send SNI for IP literals.
+
+```sh
+curl -v --cacert poc_ca.pem \
+     --resolve origin.test.invalid:8443:10.99.0.2 \
+     https://origin.test.invalid:8443/
+```
+
+Throughput over TAP is poor, which is fine -- the POC's gate is functional, and
+its performance figures come from M0a and later from real hardware.
 
 ## POC gate
 

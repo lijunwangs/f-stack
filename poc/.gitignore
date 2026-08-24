@@ -3,3 +3,5 @@ host_test
 poc_ca.pem
 *.dSYM/
 tls_bench
+origin_key.pem
+origin_crt.pem
