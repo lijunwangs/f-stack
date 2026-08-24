@@ -1,0 +1,24 @@
+# Host-side tests: the POC parts that do not need DPDK or F-Stack.
+# Builds on Linux and macOS.
+
+CFLAGS += -O2 -g -Wall -Wextra -Wno-unused-parameter -I.
+
+ifneq ($(shell pkg-config --exists openssl && echo 0),0)
+  BREW_SSL := $(shell brew --prefix openssl@3 2>/dev/null)
+  ifeq ($(BREW_SSL),)
+    $(error "No OpenSSL found: install libssl-dev, or openssl@3 via brew")
+  endif
+  CFLAGS += -I$(BREW_SSL)/include
+  LIBS += -L$(BREW_SSL)/lib -lssl -lcrypto
+else
+  CFLAGS += $(shell pkg-config --cflags openssl)
+  LIBS += $(shell pkg-config --libs openssl)
+endif
+
+host_test: host_test.c sni.c forge.c scan.c proxy.h
+	$(CC) $(CFLAGS) -o $@ host_test.c sni.c forge.c scan.c $(LIBS)
+
+clean:
+	rm -f host_test poc_ca.pem
+
+.PHONY: clean
