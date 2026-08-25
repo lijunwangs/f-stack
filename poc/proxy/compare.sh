@@ -39,9 +39,12 @@ B_PROC=${B_PROC:-poc_proxy_kernel}
 B_LOG=${B_LOG:-poc_kernel.log}
 B_NS=${B_NS:-}
 
-SWEEP=${SWEEP:-"25 50 100 200 400"}
+SWEEP=${SWEEP:-"10 25 50 100 200"}
 DUR=${DUR:-15}
-PLATEAU_PCT=${PLATEAU_PCT:-5}     # stop when a step gains less than this
+# Stop only after this many consecutive steps fail to beat the best seen.
+# One non-improving step is not a plateau: throughput often dips when the
+# generator starts contending, then recovers.
+STALL_STEPS=${STALL_STEPS:-2}
 OUT=${OUT:-compare_results.txt}
 DIR=$(cd "$(dirname "$0")" && pwd)
 
@@ -74,37 +77,44 @@ run_step() {
         for (i = 2; i <= NF; i++) { split($i, kv, "="); v[kv[1]] = kv[2] }
         print v["cps"], v["cores"], v["per1k"]
     }' | tail -1)
-    if [ -z "${result}" ]; then
-        # No RESULT means bench_proxy bailed. Show why rather than reporting 0.
-        echo "${out}" | grep -vE '^\s*$' | tail -8 | sed 's/^/           | /' >&2
+    _cps=$(echo "${result}" | awk '{ print ($1 == "" ? 0 : $1) }')
+    if [ -z "${result}" ] || awk -v n="${_cps}" 'BEGIN { exit !(n + 0 <= 0) }'; then
+        # Either bench_proxy bailed or it measured nothing. Both need the
+        # subprocess output; reporting a bare zero hides the reason.
+        echo "${out}" | grep -vE '^[[:space:]]*$' | tail -10 |
+            sed 's/^/           | /' >&2
     fi
     echo "${result}"
 }
 
-# Sweep concurrency until the rate plateaus. Sets SAT_CPS / SAT_C / SAT_CORES.
+# Sweep concurrency and keep the best result. Sets SAT_CPS / SAT_C / SAT_CORES.
 saturate() {
     _label=$1; shift
-    best=0; best_c=0; best_cores=0
+    best=0; best_c=0; best_cores=0; stalled=0
     for c in ${SWEEP}; do
         printf '  %-8s C=%-4s ' "${_label}" "${c}"
-        set -- "$@"
         r=$(run_step "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${c}" cps)
         cps=$(echo "${r}" | awk '{ print ($1 == "" ? 0 : $1) }')
         cores=$(echo "${r}" | awk '{ print ($2 == "" ? 0 : $2) }')
         printf 'cps=%-9s cores=%s\n' "${cps}" "${cores}"
 
-        if [ -z "${r}" ]; then
-            echo "           step failed -- see the lines above; stopping"
+        # A zero rate is a broken run, not a slow one. Say so and stop.
+        dead=$(awk -v n="${cps}" 'BEGIN { print (n + 0 <= 0) ? 1 : 0 }')
+        if [ -z "${r}" ] || [ "${dead}" = 1 ]; then
+            echo "           no traffic measured -- diagnostics above; stopping"
             break
         fi
 
-        gain=$(awk -v n="${cps}" -v o="${best}" \
-            'BEGIN { if (o <= 0) print 100; else printf "%.1f", (n - o) * 100 / o }')
-        stop=$(awk -v g="${gain}" -v p="${PLATEAU_PCT}" \
-            'BEGIN { print (g < p) ? 1 : 0 }')
         better=$(awk -v n="${cps}" -v o="${best}" 'BEGIN { print (n > o) ? 1 : 0 }')
-        [ "${better}" = 1 ] && { best=${cps}; best_c=${c}; best_cores=${cores}; }
-        [ "${stop}" = 1 ] && { echo "           plateau reached"; break; }
+        if [ "${better}" = 1 ]; then
+            best=${cps}; best_c=${c}; best_cores=${cores}; stalled=0
+        else
+            stalled=$((stalled + 1))
+            if [ "${stalled}" -ge "${STALL_STEPS}" ]; then
+                echo "           ${stalled} steps without improvement; peak was ${best} at C=${best_c}"
+                break
+            fi
+        fi
     done
     SAT_CPS=${best}; SAT_C=${best_c}; SAT_CORES=${best_cores}
 }
