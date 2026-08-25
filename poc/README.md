@@ -145,8 +145,14 @@ cp config.ini.virtio config.ini          # set lcore_mask
 sudo LINK_MODE=virtio ./poc_ctl.sh start # configures ffvu0 after EAL init
 ```
 
-`config.ini.virtio` pins an explicit `mac=` so the DPDK port and the kernel tap
-can never share an address -- the failure that made `net_tap` unusable.
+**The MAC has to be re-stamped on the kernel side.** Whenever DPDK creates the
+kernel-side netdev -- `net_tap`, or `virtio_user` with `iface=` -- it gives that
+netdev the same MAC as the DPDK port. Setting `mac=` on the vdev does not
+separate them; it sets both. FreeBSD then drops every ARP request as
+self-originated (`freebsd/netinet/if_ether.c:899`), silently and with no
+counter, so the link looks dead while the interface looks perfect. `poc_ctl.sh`
+re-stamps the tap with a different address before bringing it up. A veth pair
+escapes this only because the *kernel* creates two independent devices.
 
 Measuring F-Stack over `af_packet` and calling it a kernel-bypass result would
 be self-defeating: those packets go through the kernel too.

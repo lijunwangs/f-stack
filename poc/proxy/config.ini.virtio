@@ -13,9 +13,12 @@
 lcore_mask=2
 channel=4
 
-# mac= is explicit so the DPDK port and the kernel tap never share an address:
-# FreeBSD's ARP drops any request whose sender MAC matches its own
-# (freebsd/netinet/if_ether.c:899), which is what made net_tap unusable.
+# mac= sets the DPDK port's address -- and DPDK stamps the SAME address onto
+# the kernel tap it creates, so this alone does not keep the two sides apart.
+# poc_ctl.sh re-stamps the tap with a different MAC afterwards, which is what
+# actually matters: FreeBSD's ARP drops any request whose sender MAC matches
+# its own (freebsd/netinet/if_ether.c:899), silently, with no counter. That is
+# the same failure that made net_tap unusable.
 extra_eal_args=--vdev=virtio_user0,path=/dev/vhost-net,queues=1,queue_size=1024,iface=ffvu0,mac=00:16:3e:5a:00:02 --no-pci
 
 # vhost-net negotiates offloads; keep F-Stack from assuming any.

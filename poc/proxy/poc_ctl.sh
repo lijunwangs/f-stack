@@ -21,6 +21,10 @@ DPDK_IF=${DPDK_IF:-ffdpdk}
 KERNEL_IP=${KERNEL_IP:-10.99.0.1}
 VIRTIO_IF=${VIRTIO_IF:-ffvu0}
 VIRTIO_KERNEL_IP=${VIRTIO_KERNEL_IP:-10.98.0.1}
+# Must differ from the mac= on the vdev: DPDK stamps the port's MAC onto the
+# tap it creates, and FreeBSD's ARP drops any request whose sender MAC is its
+# own (freebsd/netinet/if_ether.c:899).
+VIRTIO_KERNEL_MAC=${VIRTIO_KERNEL_MAC:-00:16:3e:5a:00:01}
 
 # The origin lives on the kernel side of whichever link is in use, so the
 # default has to follow LINK_MODE or the proxy dials the wrong network.
@@ -51,11 +55,17 @@ setup_virtio_link() {
         }
         sleep 1
     done
+    # Re-stamp the kernel side before bringing it up. DPDK gave the tap the
+    # same MAC as the virtio port, which makes every ARP request look
+    # self-originated to F-Stack and get dropped silently.
+    ip link set "${VIRTIO_IF}" down 2>/dev/null || true
+    ip link set "${VIRTIO_IF}" address "${VIRTIO_KERNEL_MAC}"
     ip addr replace "${VIRTIO_KERNEL_IP}/24" dev "${VIRTIO_IF}"
     ip link set "${VIRTIO_IF}" up
     ethtool -K "${VIRTIO_IF}" tx off rx off gso off tso off gro off \
         >/dev/null 2>&1 || true
-    echo "link: ${VIRTIO_IF} (kernel, ${VIRTIO_KERNEL_IP}) <-> virtio_user (DPDK)"
+    echo "link: ${VIRTIO_IF} (kernel, ${VIRTIO_KERNEL_IP}, ${VIRTIO_KERNEL_MAC})"
+    echo "      <-> virtio_user (DPDK, MAC from config.ini extra_eal_args)"
 }
 
 setup_link() {
