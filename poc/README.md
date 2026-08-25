@@ -165,17 +165,27 @@ service on the kernel's `127.0.0.1`. The origin has to sit on the kernel side
 of the TAP with its own address. The link gets two: the kernel takes
 `10.99.0.1`, F-Stack takes `10.99.0.2`.
 
+The TAP device only exists once DPDK has initialised it, so the gateway
+starts first and the kernel side is configured afterwards.
+
 ```sh
 cp config.ini.sample config.ini        # then set lcore_mask
-./run_single_box.sh                    # starts an origin, prints the rest
 
-# in another shell, once the TAP device appears:
-sudo ip addr add 10.99.0.1/24 dev ffm0
-sudo ip link set ffm0 up
+# shell 1 -- the gateway. Creates ffm0.
+sudo POC_ORIGIN=10.99.0.1:9443 ./poc_proxy --conf config.ini --proc-type=primary
+
+# shell 2 -- configures the TAP, starts an origin, runs the checks
+sudo ./test_single_box.sh
 ```
 
-Drive it with `--resolve` rather than an IP URL: the POC keys everything on
-SNI, and clients do not send SNI for IP literals.
+`test_single_box.sh` verifies three things: that a request completes through
+the gateway; that the certificate the client is served is issued by the POC CA
+rather than the origin, which is what distinguishes interception from
+passthrough; and that a body carrying the canary is blocked, which proves
+plaintext actually reaches the scanner.
+
+To drive it by hand, use `--resolve` rather than an IP URL -- the POC keys
+everything on SNI, and clients do not send SNI for IP literals:
 
 ```sh
 curl -v --cacert poc_ca.pem \
