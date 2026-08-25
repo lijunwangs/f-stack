@@ -50,6 +50,13 @@ first: the unprivileged build cannot overwrite them.
 If both builds pass the same three checks, the abstraction is sound and any
 later performance difference between them is attributable to the transport.
 
+The kernel build earned its keep immediately by exposing a real bug: entering
+the relay state without draining what was already buffered. On loopback a
+client's Finished and its first request arrive in the same segment, so one read
+pulls both into the BIO -- and with edge-triggered readiness on either stack, no
+further event ever comes and the session hangs. F-Stack had been getting lucky
+on segment timing.
+
 This exists to make a comparison against a stock proxy interpretable. Measuring
 the POC against Envoy directly conflates three variables: userspace TCP versus
 kernel, OpenSSL versus BoringSSL, and our state machine versus a mature filter

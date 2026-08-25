@@ -322,6 +322,55 @@ static void finish(struct session *s)
     session_close(s);
 }
 
+/*
+ * Drain both directions once. Must be called whenever the session enters
+ * RELAY, not only on a socket event: data can already be sitting in the read
+ * BIO -- on loopback a client's Finished and its first request usually arrive
+ * in the same segment -- and with edge-triggered readiness no further event
+ * would ever come. Closes the session on completion or error, so callers must
+ * not touch it afterwards.
+ */
+static void relay_pump(struct session *s)
+{
+    int n, r;
+
+    n = pump_in(s->cfd, s->crbio);
+    if (n == -1) {
+        fail(s, "client read error");
+        return;
+    }
+    r = relay_one(s, s->cssl, s->ossl, s->ofd, s->owbio);
+    if (n == 0 && r == 0)
+        r = 1;
+    if (r == -2) {
+        blocked(s);
+        return;
+    }
+    if (r < 0) {
+        fail(s, "relay to origin");
+        return;
+    }
+    if (r > 0) {
+        finish(s);
+        return;
+    }
+
+    n = pump_in(s->ofd, s->orbio);
+    if (n == -1) {
+        fail(s, "origin read error");
+        return;
+    }
+    r = relay_one(s, s->ossl, s->cssl, s->cfd, s->cwbio);
+    if (n == 0 && r == 0)
+        r = 1;
+    if (r == -2)
+        blocked(s);
+    else if (r < 0)
+        fail(s, "relay to client");
+    else if (r > 0)
+        finish(s);
+}
+
 /* ---- event entry point ------------------------------------------------ */
 
 void session_event(struct session *s, int fd, int filter)
@@ -402,6 +451,7 @@ void session_event(struct session *s, int fd, int filter)
             if (rc == 1) {
                 s->state = ST_RELAY;
                 stats.client_handshakes++;
+                relay_pump(s);
             } else if (!ssl_wants_more(s->cssl, rc)) {
                 fail(s, "client handshake");
             }
@@ -431,6 +481,7 @@ void session_event(struct session *s, int fd, int filter)
         if (rc == 1) {
             stats.client_handshakes++;
             s->state = ST_RELAY;
+            relay_pump(s);
             return;
         }
         if (!ssl_wants_more(s->cssl, rc))
@@ -438,42 +489,9 @@ void session_event(struct session *s, int fd, int filter)
         return;
     }
 
-    case ST_RELAY: {
-        int n, r;
-
-        if (is_client) {
-            n = pump_in(s->cfd, s->crbio);
-            if (n == -1) {
-                fail(s, "client read error");
-                return;
-            }
-            r = relay_one(s, s->cssl, s->ossl, s->ofd, s->owbio);
-            if (n == 0)
-                r = 1;          /* socket closed under us */
-            if (r > 0)
-                finish(s);
-            else if (r == -2)
-                blocked(s);
-            else if (r < 0)
-                fail(s, "relay to origin");
-        } else {
-            n = pump_in(s->ofd, s->orbio);
-            if (n == -1) {
-                fail(s, "origin read error");
-                return;
-            }
-            r = relay_one(s, s->ossl, s->cssl, s->cfd, s->cwbio);
-            if (n == 0)
-                r = 1;
-            if (r > 0)
-                finish(s);
-            else if (r == -2)
-                blocked(s);
-            else if (r < 0)
-                fail(s, "relay to client");
-        }
+    case ST_RELAY:
+        relay_pump(s);
         return;
-    }
 
     default:
         return;
