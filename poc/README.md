@@ -72,8 +72,14 @@ throughput -- "who tuned harder" is an unwinnable argument, while cores per
 1000 CPS is what a capacity plan uses. `bench_proxy.sh` measures exactly that
 against any proxy:
 
+Benchmarking needs a *persistent* origin — `test_single_box.sh` starts one and
+kills it on exit, so a passing functional test does not mean one is running.
+`origin.sh` provides one, preferring nginx because `openssl s_server` is single
+threaded and caps the measured rate well below what the proxy can do.
+
 ```sh
-sudo apt install -y nghttp2-client        # provides h2load
+sudo apt install -y nghttp2-client nginx  # h2load, and a real origin
+./origin.sh start                         # 127.0.0.1:9443
 
 # kernel build
 ./bench_proxy.sh -t origin.test.invalid:8443 -a 127.0.0.1 \

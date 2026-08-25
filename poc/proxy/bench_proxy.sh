@@ -86,6 +86,22 @@ else
     exit 1
 fi
 
+# One real request before loading: a dead origin or a stopped proxy otherwise
+# produces a confident-looking table full of zeros.
+if ! curl -sS --max-time 10 ${CACERT:+--cacert "${CACERT}"} \
+        "https://${HOST}:${PORT}/" >/dev/null 2>&1; then
+    echo "preflight failed: no successful request through ${TARGET}."
+    echo
+    echo "Check, in order:"
+    echo "  - the proxy is running and listening on ${PORT}"
+    echo "  - its origin is up:            ./origin.sh start"
+    echo "  - the CA matches this build:   ${CACERT:-<none>}"
+    echo
+    echo "test_single_box.sh starts an origin and kills it on exit, so a"
+    echo "functional test passing does not mean one is running now."
+    exit 1
+fi
+
 cpu_ticks() {
     # utime + stime from /proc/<pid>/stat, fields 14 and 15 after comm.
     awk '{ n = 0; for (i = 1; i <= NF; i++) if ($i ~ /\)$/) n = i;

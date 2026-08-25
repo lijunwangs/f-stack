@@ -1,7 +1,12 @@
 *.dSYM/
 host_test
+nginx_tmp/
 origin_crt.pem
 origin_key.pem
+origin_nginx.conf
+origin_nginx.pid
+origin_nginx_error.log
+origin_sserver.pid
 poc_ca.pem
 poc_ca_kernel.pem
 poc_kernel.log
