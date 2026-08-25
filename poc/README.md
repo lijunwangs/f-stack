@@ -13,7 +13,40 @@ sessions, everything inspected.
 |---|---|---|
 | `bench/` | OpenSSL only | M0a: measures the CPU-bound lines of the budget |
 | `proxy/` | DPDK + libfstack | The vertical slice: intercept, forge, inspect, relay |
+| `proxy/` (`STACK=kernel`) | OpenSSL only | The same proxy on kernel sockets, as a control |
 | `proxy/host_test.c` | OpenSSL only | Tests the SNI parser and certificate factory |
+
+### Two builds of the same proxy
+
+```sh
+make                  # F-Stack + DPDK
+make STACK=kernel     # kernel sockets + epoll, no DPDK
+make both             # both, for a like-for-like comparison
+```
+
+All the proxy logic lives in `main.c`, `session.c`, `sni.c`, `forge.c` and
+`scan.c` and is shared verbatim. `net.h` is a small platform layer with two
+implementations -- `net_fstack.c` (`ff_*` plus kqueue) and `net_kernel.c`
+(POSIX plus epoll) -- so `ff_*` appears in exactly one file. Sockets map one
+to one; only the event loop needed real translation, and since the proxy only
+ever asks to watch an fd for read or write, a three-call abstraction
+(`ev_create`, `ev_watch`, `ev_wait`) covers both without emulating either.
+
+This exists to make a comparison against a stock proxy interpretable. Measuring
+the POC against Envoy directly conflates three variables: userspace TCP versus
+kernel, OpenSSL versus BoringSSL, and our state machine versus a mature filter
+chain. The kernel build isolates the first:
+
+| Comparison | Isolates |
+|---|---|
+| F-Stack build vs kernel build | the kernel-bypass delta, everything else identical |
+| kernel build vs Envoy | our implementation versus a mature one |
+
+Metric to report: **cores consumed at a fixed offered load** with a p99.9
+budget, not peak throughput -- "who tuned harder" is an unwinnable argument.
+Use a fixed-rate generator (`wrk2`, `fortio`, `h2load`), never closed-loop, or
+coordinated omission makes the tail figures fiction. And not over the veth rig:
+`af_packet` over veth measures the transport, not the design.
 
 ## Building
 

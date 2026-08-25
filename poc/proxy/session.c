@@ -12,7 +12,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/ioctl.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -20,7 +19,7 @@
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 
-#include "ff_api.h"
+#include "net.h"
 #include "session.h"
 
 #include "proxy.h"
@@ -42,20 +41,7 @@ static struct poc_stats stats;
 
 struct poc_stats *session_stats(void) { return &stats; }
 
-static void set_nonblock(int fd)
-{
-    int on = 1;
 
-    ff_ioctl(fd, FIONBIO, &on);
-}
-
-static int kq_watch(int kq, int fd, int filter, int add)
-{
-    struct kevent ev;
-
-    EV_SET(&ev, fd, filter, add ? (EV_ADD | EV_CLEAR) : EV_DELETE, 0, 0, NULL);
-    return ff_kevent(kq, &ev, 1, NULL, 0, NULL);
-}
 
 /* ---- lifecycle -------------------------------------------------------- */
 
@@ -76,9 +62,9 @@ struct session *session_new(int kq, int cfd, const struct sockaddr_in *origin)
     s->state = ST_CH;
     s->origin = *origin;
 
-    set_nonblock(cfd);
+    net_set_nonblock(cfd);
     by_fd[cfd] = s;
-    if (kq_watch(kq, cfd, EVFILT_READ, 1) < 0) {
+    if (ev_watch(kq, cfd, NET_EV_READ, 1) < 0) {
         session_close(s);
         return NULL;
     }
@@ -105,11 +91,11 @@ void session_close(struct session *s)
         SSL_free(s->ossl);
     if (s->cfd >= 0) {
         by_fd[s->cfd] = NULL;
-        ff_close(s->cfd);
+        net_close(s->cfd);
     }
     if (s->ofd >= 0) {
         by_fd[s->ofd] = NULL;
-        ff_close(s->ofd);
+        net_close(s->ofd);
     }
     free(s);
 }
@@ -135,7 +121,7 @@ static int pump_out(int fd, BIO *wbio)
         ssize_t off = 0;
 
         while (off < n) {
-            ssize_t w = ff_write(fd, buf + off, (size_t)(n - off));
+            ssize_t w = net_write(fd, buf + off, (size_t)(n - off));
 
             if (w > 0) {
                 off += w;
@@ -160,7 +146,7 @@ static int pump_out(int fd, BIO *wbio)
 static int pump_in(int fd, BIO *rbio)
 {
     char buf[RELAY_BUF_SZ];
-    ssize_t n = ff_read(fd, buf, sizeof(buf));
+    ssize_t n = net_read(fd, buf, sizeof(buf));
 
     if (n > 0) {
         BIO_write(rbio, buf, (int)n);
@@ -185,22 +171,22 @@ static int ssl_wants_more(SSL *ssl, int rc)
 
 static int start_origin(struct session *s)
 {
-    int fd = ff_socket(AF_INET, SOCK_STREAM, 0);
+    int fd = net_socket(AF_INET, SOCK_STREAM, 0);
     int rc;
 
     if (fd < 0 || fd >= POC_MAX_FD)
         return -1;
 
-    set_nonblock(fd);
+    net_set_nonblock(fd);
     s->ofd = fd;
     by_fd[fd] = s;
 
-    rc = ff_connect(fd, (const struct linux_sockaddr *)&s->origin,
-                    sizeof(s->origin));
+    rc = net_connect(fd, (const struct sockaddr *)&s->origin,
+                     sizeof(s->origin));
     if (rc < 0 && errno != EINPROGRESS)
         return -1;
 
-    if (kq_watch(s->kq, fd, EVFILT_WRITE, 1) < 0)
+    if (ev_watch(s->kq, fd, NET_EV_WRITE, 1) < 0)
         return -1;
     s->state = ST_OCONNECT;
     return 0;
@@ -232,7 +218,7 @@ static int begin_origin_tls(struct session *s)
     SSL_set_tlsext_host_name(s->ossl, s->sni);
     SSL_set_connect_state(s->ossl);
 
-    if (kq_watch(s->kq, s->ofd, EVFILT_READ, 1) < 0)
+    if (ev_watch(s->kq, s->ofd, NET_EV_READ, 1) < 0)
         return -1;
     s->state = ST_OHS;
     return 0;
@@ -371,12 +357,12 @@ void session_event(struct session *s, int fd, int filter)
         int err = 0;
         socklen_t len = sizeof(err);
 
-        if (ff_getsockopt(s->ofd, SOL_SOCKET, SO_ERROR, &err, &len) < 0 ||
+        if (net_getsockopt(s->ofd, SOL_SOCKET, SO_ERROR, &err, &len) < 0 ||
             err != 0) {
             fail(s, "origin unreachable");
             return;
         }
-        kq_watch(s->kq, s->ofd, EVFILT_WRITE, 0);
+        ev_watch(s->kq, s->ofd, NET_EV_WRITE, 0);
         if (begin_origin_tls(s) < 0) {
             fail(s, "origin tls setup");
             return;
@@ -502,7 +488,7 @@ int pump_in_raw(struct session *s)
 
     if (s->ch_len >= CH_BUF_MAX)
         return -1;
-    n = ff_read(s->cfd, s->ch + s->ch_len, CH_BUF_MAX - s->ch_len);
+    n = net_read(s->cfd, s->ch + s->ch_len, CH_BUF_MAX - s->ch_len);
     if (n > 0) {
         s->ch_len += (size_t)n;
         stats.rx_bytes += (unsigned long)n;

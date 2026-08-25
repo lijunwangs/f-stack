@@ -2,7 +2,7 @@
  * POC entry point: one lcore, one listen socket, kqueue event loop.
  *
  * Configuration comes from the environment so that argv stays free for
- * F-Stack and DPDK:
+ * the stack layer (F-Stack and DPDK consume argv; the kernel build ignores it):
  *   POC_LISTEN_PORT  port to listen on            (default 8443)
  *   POC_ORIGIN       upstream as ip:port          (required)
  *   POC_PATTERN      literal the scan looks for   (default "SECRET-CANARY")
@@ -16,7 +16,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <time.h>
@@ -24,16 +23,15 @@
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 
-#include "ff_api.h"
-#include "ff_config.h"
+#include "net.h"
 #include "session.h"
 
-#define MAX_EVENTS 512
+#define MAX_EVENTS NET_MAX_EVENTS
 
 static int listen_fd = -1;
 static int kq = -1;
 static struct sockaddr_in origin_addr;
-static struct kevent events[MAX_EVENTS];
+static struct net_event events[MAX_EVENTS];
 static time_t last_stats;
 static long stats_interval = 5;
 
@@ -87,16 +85,16 @@ static int loop(void *arg)
     int n, i;
     time_t now;
 
-    n = ff_kevent(kq, NULL, 0, events, MAX_EVENTS, NULL);
+    n = ev_wait(kq, events, MAX_EVENTS);
     if (n < 0) {
-        fprintf(stderr, "[poc] ff_kevent: %s\n", strerror(errno));
+        fprintf(stderr, "[poc] ev_wait: %s\n", strerror(errno));
         return -1;
     }
 
     for (i = 0; i < n; i++) {
-        int fd = (int)events[i].ident;
+        int fd = events[i].fd;
 
-        if (events[i].flags & EV_ERROR) {
+        if (events[i].events & NET_EV_ERR) {
             struct session *s = session_lookup(fd);
 
             if (s)
@@ -106,12 +104,12 @@ static int loop(void *arg)
 
         if (fd == listen_fd) {
             for (;;) {
-                int cfd = ff_accept(listen_fd, NULL, NULL);
+                int cfd = net_accept(listen_fd);
 
                 if (cfd < 0)
                     break;
                 if (!session_new(kq, cfd, &origin_addr))
-                    ff_close(cfd);
+                    net_close(cfd);
             }
             continue;
         }
@@ -120,7 +118,7 @@ static int loop(void *arg)
             struct session *s = session_lookup(fd);
 
             if (s)
-                session_event(s, fd, (int)events[i].filter);
+                session_event(s, fd, events[i].events);
         }
     }
 
@@ -135,41 +133,38 @@ static int loop(void *arg)
 static int setup_listener(int port)
 {
     struct sockaddr_in addr;
-    struct kevent ev;
     int on = 1;
 
-    listen_fd = ff_socket(AF_INET, SOCK_STREAM, 0);
+    listen_fd = net_socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd < 0) {
-        fprintf(stderr, "[poc] ff_socket: %s\n", strerror(errno));
+        fprintf(stderr, "[poc] net_socket: %s\n", strerror(errno));
         return -1;
     }
-    ff_setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
-    ff_ioctl(listen_fd, FIONBIO, &on);
+    net_setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+    net_set_nonblock(listen_fd);
 
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
     addr.sin_port = htons((uint16_t)port);
 
-    if (ff_bind(listen_fd, (const struct linux_sockaddr *)&addr,
-                sizeof(addr)) < 0) {
-        fprintf(stderr, "[poc] ff_bind(%d): %s\n", port, strerror(errno));
+    if (net_bind(listen_fd, (const struct sockaddr *)&addr,
+                 sizeof(addr)) < 0) {
+        fprintf(stderr, "[poc] net_bind(%d): %s\n", port, strerror(errno));
         return -1;
     }
-    if (ff_listen(listen_fd, 4096) < 0) {
-        fprintf(stderr, "[poc] ff_listen: %s\n", strerror(errno));
+    if (net_listen(listen_fd, 4096) < 0) {
+        fprintf(stderr, "[poc] net_listen: %s\n", strerror(errno));
         return -1;
     }
 
-    kq = ff_kqueue();
+    kq = ev_create();
     if (kq < 0) {
-        fprintf(stderr, "[poc] ff_kqueue: %s\n", strerror(errno));
+        fprintf(stderr, "[poc] ev_create: %s\n", strerror(errno));
         return -1;
     }
-    EV_SET(&ev, listen_fd, EVFILT_READ, EV_ADD, 0, MAX_EVENTS, NULL);
-    if (ff_kevent(kq, &ev, 1, NULL, 0, NULL) < 0) {
-        fprintf(stderr, "[poc] ff_kevent add listener: %s\n",
-                strerror(errno));
+    if (ev_watch(kq, listen_fd, NET_EV_READ, 1) < 0) {
+        fprintf(stderr, "[poc] ev_watch listener: %s\n", strerror(errno));
         return -1;
     }
     return 0;
@@ -205,19 +200,20 @@ int main(int argc, char *argv[])
     if (forge_export_ca(ca_out && *ca_out ? ca_out : "poc_ca.pem") != 0)
         fprintf(stderr, "[poc] warning: could not write the CA PEM\n");
 
-    if (ff_init(argc, argv) != 0) {
-        fprintf(stderr, "ff_init failed\n");
+    if (net_init(argc, argv) != 0) {
+        fprintf(stderr, "net_init failed\n");
         return 1;
     }
     if (setup_listener(port) != 0)
         return 1;
 
-    printf("[poc] listening on %d, origin %s, CA at %s\n", port, origin,
+    printf("[poc] stack=%s listening on %d, origin %s, CA at %s\n",
+           net_stack_name(), port, origin,
            ca_out && *ca_out ? ca_out : "poc_ca.pem");
     fflush(stdout);
     last_stats = time(NULL);
 
-    ff_run(loop, NULL);
+    net_run(loop, NULL);
     forge_fini();
     return 0;
 }
