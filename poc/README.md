@@ -67,11 +67,37 @@ chain. The kernel build isolates the first:
 | F-Stack build vs kernel build | the kernel-bypass delta, everything else identical |
 | kernel build vs Envoy | our implementation versus a mature one |
 
-Metric to report: **cores consumed at a fixed offered load** with a p99.9
-budget, not peak throughput -- "who tuned harder" is an unwinnable argument.
-Use a fixed-rate generator (`wrk2`, `fortio`, `h2load`), never closed-loop, or
-coordinated omission makes the tail figures fiction. And not over the veth rig:
-`af_packet` over veth measures the transport, not the design.
+Metric to report: **cores consumed at a fixed offered load**, not peak
+throughput -- "who tuned harder" is an unwinnable argument, while cores per
+1000 CPS is what a capacity plan uses. `bench_proxy.sh` measures exactly that
+against any proxy:
+
+```sh
+sudo apt install -y nghttp2-client        # provides h2load
+
+# kernel build
+./bench_proxy.sh -t origin.test.invalid:8443 -a 127.0.0.1 \
+                 -c poc_ca_kernel.pem -p poc_proxy_kernel
+
+# F-Stack build
+sudo ./bench_proxy.sh -t origin.test.invalid:8443 -a 10.99.0.2 \
+                      -c poc_ca.pem -p poc_proxy
+
+# Envoy, or anything else, for comparison
+./bench_proxy.sh -t origin.test.invalid:10000 -a 127.0.0.1 \
+                 -c envoy_ca.pem -p envoy
+```
+
+It drives a fixed connection count with `Connection: close`, so requests per
+second *is* the connection rate, and reads the proxy's own `utime + stime` from
+`/proc/<pid>/stat` to report cores consumed and cores per 1000 CPS.
+
+Two cautions. Any comparison is meaningless unless both proxies do equivalent
+work -- TLS termination, an upstream TLS connection, and the same inspection;
+Envoy in passthrough proves nothing. And do not draw platform conclusions from
+the veth rig: `af_packet` over veth is one of the slowest DPDK paths there is,
+so it handicaps F-Stack in a way the real NIC will not. Comparative runs belong
+on the deployment hardware.
 
 ## Building
 
