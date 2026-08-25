@@ -78,13 +78,26 @@ fi
 # excluding this script.
 case "${PROC}" in
     ''|*[!0-9]*)
-        PID=$(pgrep -x "${PROC}" 2>/dev/null | head -1)
-        if [ -z "${PID}" ]; then
-            PID=$(pgrep -x "$(printf '%.15s' "${PROC}")" 2>/dev/null | head -1)
+        matches=$(pgrep -x "${PROC}" 2>/dev/null)
+        [ -z "${matches}" ] && \
+            matches=$(pgrep -x "$(printf '%.15s' "${PROC}")" 2>/dev/null)
+        [ -z "${matches}" ] && \
+            matches=$(pgrep -f "${PROC}" 2>/dev/null | grep -v "^$$\$")
+        count=$(echo "${matches}" | grep -c '[0-9]' || true)
+        # Picking one of several silently attributes CPU to whichever process
+        # pgrep happened to list first -- typically a stale idle instance,
+        # which reads as zero cores and zero throughput.
+        if [ "${count}" -gt 1 ]; then
+            echo "several processes match '${PROC}':"
+            for m in ${matches}; do
+                printf '  pid %-8s %s\n' "${m}" \
+                    "$(tr '\0' ' ' < "/proc/${m}/cmdline" 2>/dev/null)"
+            done
+            echo
+            echo "Kill the stale ones, or pass the pid you mean with -p <pid>."
+            exit 1
         fi
-        if [ -z "${PID}" ]; then
-            PID=$(pgrep -f "${PROC}" 2>/dev/null | grep -v "^$$\$" | head -1)
-        fi
+        PID=$(echo "${matches}" | head -1)
         ;;
     *)  PID=${PROC} ;;
 esac

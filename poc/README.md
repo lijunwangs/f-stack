@@ -200,6 +200,18 @@ build against Envoy or anything else that terminates TLS. Results land in
 Sides run sequentially, never together — on one box they would otherwise
 compete for cores and both numbers would be wrong.
 
+Two ways to measure something other than the proxy, both encountered here:
+
+**A stale duplicate process.** With two `poc_proxy_kernel` instances running,
+CPU was attributed to whichever `pgrep` listed first — an idle one — reading as
+zero cores and zero throughput. `bench_proxy.sh` now refuses to guess and lists
+the candidates instead.
+
+**An `openssl s_server` origin.** It is single threaded and caps the rate well
+below any proxy. If a run returns `<HTML><BODY BGCOLOR="#ffffff">`, that is
+s_server's page and the number measures the origin. Install nginx and restart
+`origin.sh`, which prefers it.
+
 ### Comparing a busy-polling stack fairly
 
 **Do not compare F-Stack against the kernel on CPU at fixed load.** With
