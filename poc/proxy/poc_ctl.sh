@@ -12,7 +12,9 @@ set -e
 PIDFILE=${PIDFILE:-./poc_proxy.pid}
 LOGFILE=${LOGFILE:-./poc_proxy.log}
 CONF=${CONF:-config.ini}
-TAP=${TAP:-ffm0}
+HOST_IF=${HOST_IF:-ffhost}
+DPDK_IF=${DPDK_IF:-ffdpdk}
+KERNEL_IP=${KERNEL_IP:-10.99.0.1}
 
 POC_ORIGIN=${POC_ORIGIN:-10.99.0.1:9443}
 POC_LISTEN_PORT=${POC_LISTEN_PORT:-8443}
@@ -21,6 +23,17 @@ export POC_ORIGIN POC_LISTEN_PORT POC_PATTERN
 
 running() {
     [ -f "${PIDFILE}" ] && kill -0 "$(cat "${PIDFILE}")" 2>/dev/null
+}
+
+# af_packet binds a raw socket at EAL init, so the pair must exist and be up
+# before the gateway starts. Idempotent.
+setup_link() {
+    if ! ip link show "${DPDK_IF}" >/dev/null 2>&1; then
+        ip link add "${HOST_IF}" type veth peer name "${DPDK_IF}"
+    fi
+    ip addr replace "${KERNEL_IP}/24" dev "${HOST_IF}"
+    ip link set "${HOST_IF}" up
+    ip link set "${DPDK_IF}" up
 }
 
 case "${1:-}" in
@@ -38,6 +51,7 @@ start)
         rm -rf /var/run/dpdk/rte 2>/dev/null || true
     fi
 
+    setup_link
     : > "${LOGFILE}"
     setsid ./poc_proxy --conf "${CONF}" --proc-type=primary \
         >> "${LOGFILE}" 2>&1 &
@@ -51,11 +65,14 @@ start)
         exit 1
     fi
     echo "started as pid $(cat "${PIDFILE}"), logging to ${LOGFILE}"
-    if ip link show "${TAP}" >/dev/null 2>&1; then
-        echo "${TAP} is up; next: sudo ./test_single_box.sh"
-    else
-        echo "warning: ${TAP} did not appear -- check ${LOGFILE}"
-    fi
+    echo "link: ${HOST_IF} (kernel, ${KERNEL_IP}) <-> ${DPDK_IF} (DPDK)"
+    echo "next: sudo ./test_single_box.sh"
+    ;;
+
+link)
+    setup_link
+    ip -br addr show "${HOST_IF}"
+    ip -br addr show "${DPDK_IF}"
     ;;
 
 stop)
@@ -83,8 +100,8 @@ status)
     else
         echo "not running"
     fi
-    printf '%s: ' "${TAP}"
-    ip -br addr show "${TAP}" 2>/dev/null || echo "absent"
+    printf '%s: ' "${HOST_IF}"
+    ip -br addr show "${HOST_IF}" 2>/dev/null || echo "absent"
     echo "last stats line:"
     grep '^\[poc\]' "${LOGFILE}" 2>/dev/null | tail -1 || echo "  (none yet)"
     ;;
@@ -94,7 +111,7 @@ log)
     ;;
 
 *)
-    echo "usage: $0 {start|stop|status|log}"
+    echo "usage: $0 {start|stop|status|log|link}"
     exit 1
     ;;
 esac

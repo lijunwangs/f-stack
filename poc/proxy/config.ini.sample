@@ -10,10 +10,18 @@
 lcore_mask=2
 channel=4
 
-# Virtual TAP port instead of a NIC. The kernel sees an interface named ffm0.
-extra_eal_args=--vdev=net_tap0,iface=ffm0 --no-pci
+# One end of a veth pair instead of a NIC. poc_ctl.sh creates the pair:
+# the kernel keeps ffhost, DPDK takes ffdpdk.
+#
+# Deliberately NOT the TAP PMD. With net_tap the DPDK port and the kernel
+# netdev are the same device, so both stacks share one MAC address, and
+# FreeBSD's ARP input drops any request whose sender hardware address matches
+# its own -- freebsd/netinet/if_ether.c:899, "it's from me, ignore it". The
+# result is total silence with no log and no counter. A veth pair gives the
+# two stacks separate netdevs and therefore separate MACs.
+extra_eal_args=--vdev=net_af_packet0,iface=ffdpdk --no-pci
 
-# TAP offers no checksum offload.
+# Neither veth nor af_packet offers checksum offload.
 tx_csum_offoad_skip=1
 
 # Latency settings the design calls for; the shipped default of 100 would add

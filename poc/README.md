@@ -172,14 +172,26 @@ should show the match.
 ### No cable, no public address, one box
 
 The POC needs neither a link nor outbound connectivity. `config.ini.sample`
-runs F-Stack on a TAP device with `--no-pci`, so DPDK never probes a physical
-interface and the management NIC cannot be taken over -- and no IOMMU, vfio or
-NIC binding is involved.
+runs F-Stack on one end of a veth pair with `--no-pci`, so DPDK never probes a
+physical interface and the management NIC cannot be taken over -- and no IOMMU,
+vfio or NIC binding is involved. `poc_ctl.sh start` creates the pair: the
+kernel keeps `ffhost` at `10.99.0.1`, DPDK takes `ffdpdk`, and F-Stack's own
+stack answers on `10.99.0.2`.
 
-The one subtlety: F-Stack runs its own IP stack, so `ff_connect` cannot reach a
-service on the kernel's `127.0.0.1`. The origin has to sit on the kernel side
-of the TAP with its own address. The link gets two: the kernel takes
-`10.99.0.1`, F-Stack takes `10.99.0.2`.
+Two subtleties, both learned the hard way:
+
+**F-Stack runs its own IP stack**, so `ff_connect` cannot reach a service on the
+kernel's `127.0.0.1`. The origin has to sit on the kernel side of the link with
+its own address.
+
+**Do not use the TAP PMD for this.** With `net_tap` the DPDK port and the
+kernel netdev are the same device, so both stacks share one MAC address. The
+kernel's ARP request for `10.99.0.2` then arrives carrying F-Stack's own
+sender MAC, and FreeBSD's ARP input drops it at
+`freebsd/netinet/if_ether.c:899` as self-originated. There is no log line and
+no counter: pings simply go unanswered and every session count stays at zero.
+A veth pair gives the two stacks separate netdevs, hence separate MACs, and
+ARP resolves normally.
 
 The TAP device only exists once DPDK has initialised it, so the gateway
 starts first and the kernel side is configured afterwards.

@@ -9,7 +9,7 @@
 # Then run this script (as root: it configures the TAP and binds the origin).
 set -e
 
-TAP=${TAP:-ffm0}
+HOST_IF=${HOST_IF:-ffhost}
 KERNEL_IP=${KERNEL_IP:-10.99.0.1}
 FSTACK_IP=${FSTACK_IP:-10.99.0.2}
 GW_PORT=${GW_PORT:-8443}
@@ -27,17 +27,13 @@ check() {
     fi
 }
 
-echo "1. waiting for ${TAP} (start poc_proxy first if this hangs)"
-i=0
-while ! ip link show "${TAP}" >/dev/null 2>&1; do
-    i=$((i + 1))
-    [ "$i" -gt 30 ] && { echo "   ${TAP} never appeared -- is poc_proxy running?"; exit 1; }
-    sleep 1
-done
-
-echo "2. configuring the kernel side of the link"
-ip addr replace "${KERNEL_IP}/24" dev "${TAP}"
-ip link set "${TAP}" up
+echo "1. checking the link (poc_ctl.sh start creates it)"
+if ! ip link show "${HOST_IF}" >/dev/null 2>&1; then
+    echo "   ${HOST_IF} is missing -- run: sudo ./poc_ctl.sh start"
+    exit 1
+fi
+ip addr replace "${KERNEL_IP}/24" dev "${HOST_IF}"
+ip link set "${HOST_IF}" up
 
 echo "3. generating an origin certificate for ${TEST_HOST}"
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
