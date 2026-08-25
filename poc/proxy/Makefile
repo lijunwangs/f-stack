@@ -19,7 +19,15 @@ CFLAGS += -O2 -g -Wall -Wextra -Wno-unused-parameter -I.
 CFLAGS += -I${FF_PATH}/lib
 CFLAGS += $(shell $(PKGCONF) --cflags libdpdk)
 
+# Static by default, matching the in-tree examples. Static linking drags in
+# every transitive DPDK dependency (libjitterentropy, libzstd, ...), so if
+# those are missing and cannot be installed, build with DPDK_SHARED=1 to link
+# DPDK dynamically instead -- the shared objects record their own deps.
+ifeq ($(DPDK_SHARED),1)
+LIBS += $(shell $(PKGCONF) --libs libdpdk)
+else
 LIBS += $(shell $(PKGCONF) --static --libs libdpdk)
+endif
 LIBS += -L${FF_PATH}/lib -Wl,--whole-archive,-lfstack,--no-whole-archive
 LIBS += -Wl,--no-whole-archive -lrt -lm -ldl -lcrypto -lssl -lz -pthread -lnuma
 

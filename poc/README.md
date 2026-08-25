@@ -61,6 +61,22 @@ directory:
 find / -name libdpdk.pc 2>/dev/null
 ```
 
+### Link errors for libjitterentropy or libzstd
+
+Static linking pulls in every transitive DPDK dependency, including optional
+ones. Either install them:
+
+```sh
+sudo apt install -y libjitterentropy-dev libzstd-dev
+```
+
+or link DPDK dynamically and skip the chain entirely, which needs no extra
+packages because the shared objects carry their own dependencies:
+
+```sh
+make clean && make DPDK_SHARED=1
+```
+
 The bench and the host tests need none of this — only `libssl-dev`.
 
 ## M0a — bench the budget
