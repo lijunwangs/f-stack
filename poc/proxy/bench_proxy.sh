@@ -42,10 +42,21 @@ done
 HOST=$(echo "${TARGET}" | cut -d: -f1)
 PORT=$(echo "${TARGET}" | cut -d: -f2)
 
-# Resolve the process to account for.
+# Resolve the process to account for. The kernel truncates comm to 15
+# characters, so an exact match on a longer binary name never succeeds --
+# fall back to the truncated form, then to the full command line while
+# excluding this script.
 case "${PROC}" in
-    ''|*[!0-9]*) PID=$(pgrep -x "${PROC}" | head -1) ;;
-    *)           PID=${PROC} ;;
+    ''|*[!0-9]*)
+        PID=$(pgrep -x "${PROC}" 2>/dev/null | head -1)
+        if [ -z "${PID}" ]; then
+            PID=$(pgrep -x "$(printf '%.15s' "${PROC}")" 2>/dev/null | head -1)
+        fi
+        if [ -z "${PID}" ]; then
+            PID=$(pgrep -f "${PROC}" 2>/dev/null | grep -v "^$$\$" | head -1)
+        fi
+        ;;
+    *)  PID=${PROC} ;;
 esac
 [ -n "${PID}" ] && [ -r "/proc/${PID}/stat" ] || {
     echo "cannot find process '${PROC}'"; exit 1
