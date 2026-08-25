@@ -3,8 +3,8 @@
 # link is in use. The functional test starts its own and tears it down, which
 # is fine for a single request and useless for load.
 #
-#   ./origin.sh start [addr] [port]
-#   ./origin.sh stop
+#   ./origin.sh start [addr] [port] [tag]
+#   ./origin.sh stop  [addr] [port] [tag]
 #
 # Prefers nginx: openssl s_server is single threaded and becomes the
 # bottleneck long before the proxy does.
@@ -14,11 +14,14 @@ set -e
 DIR=$(cd "$(dirname "$0")" && pwd)
 ADDR=${2:-127.0.0.1}
 PORT=${3:-9443}
+# A tag keeps instances apart: the veth rig runs one inside a namespace while
+# another serves the virtio link, and a shared conf or pidfile would collide.
+TAG=${4:-root}
 # `stop` takes the same optional [addr] [port]; the port is what matters,
 # since the listener may be bound to any local address.
 HOSTNAME_CN=${TEST_HOST:-origin.test.invalid}
-CONF="${DIR}/origin_nginx.conf"
-PIDFILE="${DIR}/origin_nginx.pid"
+CONF="${DIR}/origin_nginx_${TAG}.conf"
+PIDFILE="${DIR}/origin_nginx_${TAG}.pid"
 
 gen_cert() {
     [ -r "${DIR}/origin_crt.pem" ] && [ -r "${DIR}/origin_key.pem" ] && return 0
@@ -39,11 +42,11 @@ error_log ${DIR}/origin_nginx_error.log warn;
 events { worker_connections 8192; }
 http {
     access_log off;
-    client_body_temp_path ${DIR}/nginx_tmp/body;
-    proxy_temp_path ${DIR}/nginx_tmp/proxy;
-    fastcgi_temp_path ${DIR}/nginx_tmp/fastcgi;
-    uwsgi_temp_path ${DIR}/nginx_tmp/uwsgi;
-    scgi_temp_path ${DIR}/nginx_tmp/scgi;
+    client_body_temp_path ${DIR}/nginx_tmp/${TAG}/body;
+    proxy_temp_path ${DIR}/nginx_tmp/${TAG}/proxy;
+    fastcgi_temp_path ${DIR}/nginx_tmp/${TAG}/fastcgi;
+    uwsgi_temp_path ${DIR}/nginx_tmp/${TAG}/uwsgi;
+    scgi_temp_path ${DIR}/nginx_tmp/${TAG}/scgi;
     keepalive_timeout 65;
     server {
         listen ${ADDR}:${PORT} ssl reuseport;
@@ -57,7 +60,7 @@ http {
     }
 }
 CONFEOF
-    mkdir -p "${DIR}/nginx_tmp"
+    mkdir -p "${DIR}/nginx_tmp/${TAG}"
 }
 
 # Is the port bound at all? Visible without privilege, unlike the owning pid.
@@ -118,9 +121,9 @@ start)
         openssl s_server -quiet -accept "${ADDR}:${PORT}" \
             -cert "${DIR}/origin_crt.pem" -key "${DIR}/origin_key.pem" -www \
             >/dev/null 2>&1 &
-        echo $! > "${DIR}/origin_sserver.pid"
+        echo $! > "${DIR}/origin_sserver_${TAG}.pid"
         sleep 1
-        echo "origin: s_server on ${ADDR}:${PORT} (pid $(cat "${DIR}/origin_sserver.pid"))"
+        echo "origin: s_server on ${ADDR}:${PORT} (pid $(cat "${DIR}/origin_sserver_${TAG}.pid"))"
     fi
     ;;
 stop)
@@ -129,9 +132,9 @@ stop)
             kill "$(cat "${PIDFILE}")" 2>/dev/null || true
         rm -f "${PIDFILE}"
     fi
-    if [ -f "${DIR}/origin_sserver.pid" ]; then
-        kill "$(cat "${DIR}/origin_sserver.pid")" 2>/dev/null || true
-        rm -f "${DIR}/origin_sserver.pid"
+    if [ -f "${DIR}/origin_sserver_${TAG}.pid" ]; then
+        kill "$(cat "${DIR}/origin_sserver_${TAG}.pid")" 2>/dev/null || true
+        rm -f "${DIR}/origin_sserver_${TAG}.pid"
     fi
     # Anything else still holding the port, however it was started.
     for h in $(port_holders); do

@@ -6,8 +6,11 @@ origin_crt.pem
 origin_key.pem
 origin_nginx.conf
 origin_nginx.pid
+origin_nginx_*.conf
+origin_nginx_*.pid
 origin_nginx_error.log
 origin_sserver.pid
+origin_sserver_*.pid
 poc_ca.pem
 poc_ca_kernel.pem
 poc_kernel.log

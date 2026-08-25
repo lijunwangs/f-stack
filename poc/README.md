@@ -180,6 +180,13 @@ sudo ./rig.sh status
 sudo ./rig.sh down
 ```
 
+**Subnets must not overlap.** The veth rig uses `10.97.0.x`, the virtio link
+`10.98.0.x`. When both used `10.98.0.x`, bringing up the rig put F-Stack's own
+address on a local veth, so traffic meant for the proxy was delivered locally
+and it never saw a packet — with both preflights failing and nothing obviously
+wrong in either. Each origin is also tagged (`root`, `ns`) so two nginx
+instances can run without sharing a config or pidfile.
+
 The namespace is not optional: an address on a veth in the same namespace is
 still a local address, so the kernel delivers via `lo` and the veth is never
 touched. Pass `-N poc_peer` to `bench_proxy.sh` to drive load from inside it.

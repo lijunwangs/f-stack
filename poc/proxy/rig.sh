@@ -4,7 +4,7 @@
 #
 #            root namespace                    netns poc_peer
 #   proxy  --  poc_host  <==== veth ====>  poc_peer0  --  wrk + nginx
-#              10.98.0.2                    10.98.0.1
+#              10.97.0.2                    10.97.0.1
 #
 # A namespace is required: an address on a veth in the same namespace is
 # still local, so the kernel would deliver via lo and never touch the veth.
@@ -23,8 +23,11 @@ set -e
 NS=${NS:-poc_peer}
 HOST_IF=${HOST_IF:-poc_host}
 PEER_IF=${PEER_IF:-poc_peer0}
-HOST_IP=${HOST_IP:-10.98.0.2}
-PEER_IP=${PEER_IP:-10.98.0.1}
+# Deliberately NOT 10.98.0.x: that belongs to the virtio link. Overlapping
+# subnets put the F-Stack address on a local veth, so traffic meant for it is
+# delivered locally and the proxy never sees a packet.
+HOST_IP=${HOST_IP:-10.97.0.2}
+PEER_IP=${PEER_IP:-10.97.0.1}
 PREFIX=24
 DIR=$(cd "$(dirname "$0")" && pwd)
 TEST_HOST=${TEST_HOST:-origin.test.invalid}
@@ -64,27 +67,26 @@ up)
     fi
 
     # Origin inside the namespace, so proxy-to-origin traffic crosses the veth
-    # in the same way client-to-proxy does.
-    [ -r "${DIR}/origin_crt.pem" ] || TEST_HOST="${TEST_HOST}" "${DIR}/origin.sh" \
-        start "${PEER_IP}" "${ORIGIN_PORT}" >/dev/null 2>&1 || true
-    "${DIR}/origin.sh" stop >/dev/null 2>&1 || true
-    if command -v nginx >/dev/null 2>&1; then
-        nsx nginx -c "${DIR}/origin_nginx.conf" -p "${DIR}" 2>/dev/null || {
-            echo "warning: could not start nginx in ${NS}; run origin.sh by hand"
-        }
-    fi
+    # in the same way client-to-proxy does. Tagged "ns" so it does not share a
+    # config or pidfile with an origin serving the virtio link.
+    nsx "${DIR}/origin.sh" stop "${PEER_IP}" "${ORIGIN_PORT}" ns >/dev/null 2>&1 || true
+    nsx "${DIR}/origin.sh" start "${PEER_IP}" "${ORIGIN_PORT}" ns || {
+        echo "warning: origin did not start inside ${NS}"
+    }
 
     echo
     echo "origin  ${PEER_IP}:${ORIGIN_PORT}   (inside netns ${NS})"
     echo "proxy   ${HOST_IP}:8443"
     echo "load    ip netns exec ${NS} wrk ...   or bench_proxy.sh -N ${NS}"
+    echo
+    echo "compare with:  sudo B_ADDR=${HOST_IP} B_NS=${NS} ./compare.sh"
     grep -q "${HOST_IP} ${TEST_HOST}" /etc/hosts 2>/dev/null || {
         echo
         echo "add the name once:  echo '${HOST_IP} ${TEST_HOST}' | sudo tee -a /etc/hosts"
     }
     ;;
 down)
-    "${DIR}/origin.sh" stop >/dev/null 2>&1 || true
+    nsx "${DIR}/origin.sh" stop "${PEER_IP}" "${ORIGIN_PORT}" ns >/dev/null 2>&1 || true
     ip netns pids "${NS}" 2>/dev/null | xargs -r kill 2>/dev/null || true
     ip link del "${HOST_IF}" 2>/dev/null || true
     ip netns del "${NS}" 2>/dev/null || true
