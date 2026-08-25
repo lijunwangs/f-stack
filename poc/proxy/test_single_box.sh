@@ -10,11 +10,20 @@
 set -e
 
 # STACK=kernel tests the kernel build over loopback: no veth, no DPDK, no root.
+# LINK_MODE selects which F-Stack link is in use, since each has its own
+# interface name and subnet.
 STACK=${STACK:-fstack}
-HOST_IF=${HOST_IF:-ffhost}
+LINK_MODE=${LINK_MODE:-veth}
 if [ "${STACK}" = "kernel" ]; then
+    HOST_IF=${HOST_IF:-lo}
     KERNEL_IP=${KERNEL_IP:-127.0.0.1}
     FSTACK_IP=${FSTACK_IP:-127.0.0.1}
+elif [ "${LINK_MODE}" = "virtio" ]; then
+    HOST_IF=${HOST_IF:-ffvu0}
+    KERNEL_IP=${KERNEL_IP:-10.98.0.1}
+    FSTACK_IP=${FSTACK_IP:-10.98.0.2}
+else
+    HOST_IF=${HOST_IF:-ffhost}
 fi
 KERNEL_IP=${KERNEL_IP:-10.99.0.1}
 FSTACK_IP=${FSTACK_IP:-10.99.0.2}
@@ -45,20 +54,23 @@ else
         echo "   ${HOST_IF} is missing -- run: sudo ./poc_ctl.sh start"
         exit 1
     fi
-    ip addr replace "${KERNEL_IP}/24" dev "${HOST_IF}"
-    ip link set "${HOST_IF}" up
+    if [ "${LINK_MODE}" != "virtio" ]; then
+        ip addr replace "${KERNEL_IP}/24" dev "${HOST_IF}"
+        ip link set "${HOST_IF}" up
+    fi
 fi
 
 echo "3. generating an origin certificate for ${TEST_HOST}"
 # Earlier sudo runs leave these owned by root; removal only needs write
 # permission on the directory, so this works either way.
 rm -f origin_key.pem origin_crt.pem
-if ! openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+if ! req_err=$(openssl req -x509 -newkey ec \
+        -pkeyopt ec_paramgen_curve:prime256v1 \
         -keyout origin_key.pem -out origin_crt.pem -days 1 -nodes \
         -subj "/CN=${TEST_HOST}" -addext "subjectAltName=DNS:${TEST_HOST}" \
-        2>/tmp/poc_req_err; then
+        2>&1); then
     echo "   openssl req failed:"
-    sed 's/^/     /' /tmp/poc_req_err
+    echo "${req_err}" | sed 's/^/     /'
     exit 1
 fi
 
