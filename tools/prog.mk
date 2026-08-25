@@ -54,7 +54,11 @@ FF_PROG_CFLAGS+= -I${TOPDIR}/tools/compat/include -D__BSD_VISIBLE
 FF_PROG_CFLAGS+= -I${TOPDIR}/tools/libxo
 
 FF_PROG_LIBS:= -L${TOPDIR}/tools/compat -Wl,--whole-archive,-lffcompat,--no-whole-archive
-FF_PROG_LIBS+= $(shell $(PKGCONF) --static --libs libdpdk)
+# libdpdk.pc carries OpenSSL's static private dependencies transitively, and
+# these tools link OpenSSL dynamically, so libcrypto.so resolves them itself.
+# -l:libjitterentropy.a in particular is not packaged on common distros.
+DPDK_DROP_LIBS?= -l:libjitterentropy.a
+FF_PROG_LIBS+= $(filter-out ${DPDK_DROP_LIBS},$(shell $(PKGCONF) --static --libs libdpdk))
 FF_PROG_LIBS+= -Wl,--no-whole-archive -lrt -lm -ldl -lcrypto -lpthread -lnuma
 
 CFLAGS+= -Wno-unused-but-set-variable -Wno-unused-variable
