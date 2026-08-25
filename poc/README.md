@@ -83,7 +83,8 @@ sudo apt install -y wrk nginx nghttp2-client   # generators and a real origin
 
 # connection rate: a new TLS handshake per request
 ./bench_proxy.sh -t origin.test.invalid:8443 -a 127.0.0.1 \
-                 -c poc_ca_kernel.pem -p poc_proxy_kernel -m cps
+                 -c poc_ca_kernel.pem -p poc_proxy_kernel \
+                 -m cps -l poc_kernel.log
 
 # throughput: keepalive, exercising the relay and scan path
 ./bench_proxy.sh -t origin.test.invalid:8443 -a 127.0.0.1 \
@@ -98,6 +99,13 @@ in handshakes. It requires **wrk**: h2load does not reconnect after the server
 closes, so with `Connection: close` it issues one request per client and then
 sits idle reporting a rate of zero. `-m rps` uses keepalive and measures the
 relay instead, where h2load is fine.
+
+**Pass `-l <proxy log>` in cps mode.** wrk's own accounting is unusable there:
+it treats every close-delimited response as a read error and reports zero
+requests even while moving tens of megabytes. With `-l` the harness reads the
+rate from the proxy's own `sessions=` counter, which cannot be confused this
+way. Latency in cps mode is meaningless for the same reason — use `-m rps` when
+you want percentiles.
 
 Either way the harness reads the proxy's own `utime + stime` from
 `/proc/<pid>/stat` and reports cores consumed and cores per 1000 CPS.

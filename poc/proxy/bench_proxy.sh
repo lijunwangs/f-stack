@@ -7,7 +7,12 @@
 # proxy -- point it at a host:port and give it the process to account for.
 #
 #   ./bench_proxy.sh -t <host>:<port> -a <addr> -c <cacert> -p <pid|name> \
-#                    [-m cps|rps] [-d seconds] [-C connections]
+#                    [-m cps|rps] [-d seconds] [-C connections] [-l logfile]
+#
+# Pass -l to read the rate from the proxy's own session counters instead of
+# the generator's. Preferred in cps mode: with Connection: close, wrk counts
+# every close-delimited response as a read error and reports zero requests
+# even while moving tens of megabytes.
 #
 # Two different measurements:
 #   cps  new TLS connection per request (Connection: close). Handshake bound,
@@ -29,6 +34,7 @@ PROC=""
 DURATION=20
 CONNS=50
 MODE=cps
+LOGFILE=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -39,6 +45,7 @@ while [ $# -gt 0 ]; do
         -d) DURATION=$2; shift 2 ;;
         -C) CONNS=$2; shift 2 ;;
         -m) MODE=$2; shift 2 ;;
+        -l) LOGFILE=$2; shift 2 ;;
         *) echo "unknown argument: $1"; exit 1 ;;
     esac
 done
@@ -145,6 +152,15 @@ echo "mode       ${MODE} ($([ "${MODE}" = cps ] && echo "new connection per requ
 echo "generator  ${GEN}, ${CONNS} connections, ${DURATION}s"
 echo
 
+# The proxy's own counters beat the generator's: they cannot be confused by
+# connection-close semantics.
+poc_sessions() {
+    [ -n "${LOGFILE}" ] && [ -r "${LOGFILE}" ] || { echo ""; return; }
+    grep '^\[poc\]' "${LOGFILE}" 2>/dev/null | tail -1 |
+        sed -n 's/.*sessions=\([0-9]*\).*/\1/p'
+}
+
+s0=$(poc_sessions)
 t0=$(cpu_ticks)
 start=$(date +%s)
 
@@ -180,6 +196,9 @@ esac
 
 end=$(date +%s)
 t1=$(cpu_ticks)
+# Give the proxy a moment to emit a stats line covering the tail of the run.
+[ -n "${LOGFILE}" ] && sleep 6
+s1=$(poc_sessions)
 
 wall=$((end - start))
 [ "${wall}" -lt 1 ] && wall=1
@@ -190,8 +209,26 @@ cores=$(awk -v ms="${cpu_ms}" -v w="${wall}" 'BEGIN { printf "%.2f", ms / 1000 /
 echo "${out}" | tail -20
 echo
 echo "---- accounting ----------------------------------------------"
-printf 'connections/s      %s\n' "${rate:-unknown}"
-printf 'latency            %s\n' "${lat:-unknown}"
+
+# Prefer the proxy's own count where we have it.
+if [ -n "${s0}" ] && [ -n "${s1}" ] && [ "${s1}" -gt "${s0}" ]; then
+    sessions=$((s1 - s0))
+    rate=$(awk -v n="${sessions}" -v w="${wall}" 'BEGIN { printf "%.1f", n / w }')
+    printf 'connections/s      %s   (from the proxy: %s sessions in %ss)\n' \
+        "${rate}" "${sessions}" "${wall}"
+else
+    printf 'connections/s      %s   (generator reported)\n' "${rate:-unknown}"
+    if [ "${MODE}" = cps ]; then
+        echo '                   note: in cps mode wrk counts close-delimited'
+        echo '                   responses as read errors and reports zero.'
+        echo '                   Pass -l <proxy log> for an authoritative count.'
+    fi
+fi
+if [ "${MODE}" = cps ]; then
+    printf 'latency            not meaningful in cps mode -- use -m rps\n'
+else
+    printf 'latency            %s\n' "${lat:-unknown}"
+fi
 printf 'proxy cpu          %s s over %s s wall\n' "$((cpu_ms / 1000))" "${wall}"
 printf 'proxy cores        %s of %s\n' "${cores}" "${NPROC}"
 if [ -n "${rate}" ]; then
