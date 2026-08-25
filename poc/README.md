@@ -184,6 +184,16 @@ Two subtleties, both learned the hard way:
 kernel's `127.0.0.1`. The origin has to sit on the kernel side of the link with
 its own address.
 
+**Turn the veth offloads off.** On a local pair the kernel leaves TCP
+checksums as `CHECKSUM_PARTIAL`, so the checksum field holds a pseudo-header
+sum rather than a real checksum -- normally the peer stack on the same host
+just trusts it. `af_packet` hands the frame to F-Stack unchanged, F-Stack
+validates in software, and the segment is dropped. Because ICMP is always
+checksummed in software, the symptom is that ping works perfectly while TCP
+never connects and every session count stays at zero. `poc_ctl.sh` runs
+`ethtool -K ... tx off rx off gso off tso off gro off` on both ends for this
+reason.
+
 **Do not use the TAP PMD for this.** With `net_tap` the DPDK port and the
 kernel netdev are the same device, so both stacks share one MAC address. The
 kernel's ARP request for `10.99.0.2` then arrives carrying F-Stack's own

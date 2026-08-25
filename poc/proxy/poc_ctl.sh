@@ -34,6 +34,17 @@ setup_link() {
     ip addr replace "${KERNEL_IP}/24" dev "${HOST_IF}"
     ip link set "${HOST_IF}" up
     ip link set "${DPDK_IF}" up
+
+    # Critical for veth: the kernel leaves TCP checksums as CHECKSUM_PARTIAL
+    # on a local pair, so the field carries a pseudo-header sum rather than a
+    # valid checksum. F-Stack validates in software and drops the segment, and
+    # since ICMP is always checksummed in software, ping works while TCP dies
+    # silently. Turning offloads off forces real checksums. Segmentation
+    # offloads go too, so F-Stack never sees an oversized frame.
+    for i in "${HOST_IF}" "${DPDK_IF}"; do
+        ethtool -K "$i" tx off rx off gso off tso off gro off >/dev/null 2>&1 || \
+            echo "warning: could not disable offloads on $i (is ethtool installed?)"
+    done
 }
 
 case "${1:-}" in
