@@ -45,13 +45,21 @@ PLATEAU_PCT=${PLATEAU_PCT:-5}     # stop when a step gains less than this
 OUT=${OUT:-compare_results.txt}
 DIR=$(cd "$(dirname "$0")" && pwd)
 
+# Check the NAME resolves to the address. Testing whether a line starts with
+# the address is wrong: /etc/hosts already has "127.0.0.1 localhost", which
+# would pass for any name pointed at 127.0.0.1.
 need_host() {
-    grep -qE "^$1[[:space:]]+$2\$|^$1[[:space:]]" /etc/hosts 2>/dev/null && return 0
+    _addr=$1; _name=$2
+    if getent hosts "${_name}" 2>/dev/null | grep -q "^${_addr}[[:space:]]"; then
+        echo "  ${_name} -> ${_addr}"
+        return 0
+    fi
     if [ -w /etc/hosts ]; then
-        echo "$1 $2" >> /etc/hosts
-        echo "  added '$1 $2' to /etc/hosts"
+        printf '%s %s\n' "${_addr}" "${_name}" >> /etc/hosts
+        echo "  ${_name} -> ${_addr}  (added to /etc/hosts)"
     else
-        echo "  need: echo '$1 $2' | sudo tee -a /etc/hosts"
+        echo "  ${_name} does not resolve to ${_addr}; run as root or add:"
+        echo "    echo '${_addr} ${_name}' | sudo tee -a /etc/hosts"
         return 1
     fi
 }
@@ -62,10 +70,15 @@ run_step() {
     out=$("${DIR}/bench_proxy.sh" -t "${_host}:${_port}" -a "${_addr}" \
               -c "${_ca}" -p "${_proc}" -l "${_log}" -m "${_mode}" \
               -d "${DUR}" -C "${_c}" ${_ns:+-N "${_ns}"} 2>&1) || true
-    echo "${out}" | awk '/^RESULT/ {
+    result=$(echo "${out}" | awk '/^RESULT/ {
         for (i = 2; i <= NF; i++) { split($i, kv, "="); v[kv[1]] = kv[2] }
         print v["cps"], v["cores"], v["per1k"]
-    }' | tail -1
+    }' | tail -1)
+    if [ -z "${result}" ]; then
+        # No RESULT means bench_proxy bailed. Show why rather than reporting 0.
+        echo "${out}" | grep -vE '^\s*$' | tail -8 | sed 's/^/           | /' >&2
+    fi
+    echo "${result}"
 }
 
 # Sweep concurrency until the rate plateaus. Sets SAT_CPS / SAT_C / SAT_CORES.
@@ -79,6 +92,11 @@ saturate() {
         cps=$(echo "${r}" | awk '{ print ($1 == "" ? 0 : $1) }')
         cores=$(echo "${r}" | awk '{ print ($2 == "" ? 0 : $2) }')
         printf 'cps=%-9s cores=%s\n' "${cps}" "${cores}"
+
+        if [ -z "${r}" ]; then
+            echo "           step failed -- see the lines above; stopping"
+            break
+        fi
 
         gain=$(awk -v n="${cps}" -v o="${best}" \
             'BEGIN { if (o <= 0) print 100; else printf "%.1f", (n - o) * 100 / o }')
