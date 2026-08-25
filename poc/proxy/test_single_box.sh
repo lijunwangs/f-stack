@@ -56,7 +56,7 @@ echo
 echo "5. preflight"
 
 # Is the origin itself reachable? If not, nothing downstream can work.
-if echo | openssl s_client -connect "${KERNEL_IP}:${ORIGIN_PORT}" \
+if echo | timeout 10 openssl s_client -connect "${KERNEL_IP}:${ORIGIN_PORT}" \
         -servername "${TEST_HOST}" 2>/dev/null | grep -q "CONNECTED"; then
     check "origin answers directly" 1
 else
@@ -91,7 +91,7 @@ fi
 
 # The certificate the client sees must be ours, not the origin's. If the
 # issuer is the origin itself, traffic is passing through un-intercepted.
-issuer=$(echo | openssl s_client -connect "${FSTACK_IP}:${GW_PORT}" \
+issuer=$(echo | timeout 10 openssl s_client -connect "${FSTACK_IP}:${GW_PORT}" \
          -servername "${TEST_HOST}" 2>/dev/null |
          sed -n 's/^ *[Ii]ssuer: *//p' | head -1)
 case "${issuer}" in
