@@ -9,7 +9,13 @@
 # Then run this script (as root: it configures the TAP and binds the origin).
 set -e
 
+# STACK=kernel tests the kernel build over loopback: no veth, no DPDK, no root.
+STACK=${STACK:-fstack}
 HOST_IF=${HOST_IF:-ffhost}
+if [ "${STACK}" = "kernel" ]; then
+    KERNEL_IP=${KERNEL_IP:-127.0.0.1}
+    FSTACK_IP=${FSTACK_IP:-127.0.0.1}
+fi
 KERNEL_IP=${KERNEL_IP:-10.99.0.1}
 FSTACK_IP=${FSTACK_IP:-10.99.0.2}
 GW_PORT=${GW_PORT:-8443}
@@ -27,13 +33,17 @@ check() {
     fi
 }
 
-echo "1. checking the link (poc_ctl.sh start creates it)"
-if ! ip link show "${HOST_IF}" >/dev/null 2>&1; then
-    echo "   ${HOST_IF} is missing -- run: sudo ./poc_ctl.sh start"
-    exit 1
+if [ "${STACK}" = "kernel" ]; then
+    echo "1. kernel build: loopback, no link setup needed"
+else
+    echo "1. checking the link (poc_ctl.sh start creates it)"
+    if ! ip link show "${HOST_IF}" >/dev/null 2>&1; then
+        echo "   ${HOST_IF} is missing -- run: sudo ./poc_ctl.sh start"
+        exit 1
+    fi
+    ip addr replace "${KERNEL_IP}/24" dev "${HOST_IF}"
+    ip link set "${HOST_IF}" up
 fi
-ip addr replace "${KERNEL_IP}/24" dev "${HOST_IF}"
-ip link set "${HOST_IF}" up
 
 echo "3. generating an origin certificate for ${TEST_HOST}"
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
@@ -51,6 +61,7 @@ kill -0 ${origin_pid} 2>/dev/null || { echo "   origin failed to start"; exit 1;
 
 RESOLVE="--resolve ${TEST_HOST}:${GW_PORT}:${FSTACK_IP}"
 LOGFILE=${LOGFILE:-./poc_proxy.log}
+[ "${STACK}" = "kernel" ] && LOGFILE=${LOGFILE_KERNEL:-./poc_kernel.log}
 
 echo
 echo "5. preflight"
@@ -64,15 +75,18 @@ else
     echo "      the test origin is not reachable; the gateway cannot help"
 fi
 
-# Does the F-Stack stack respond at all? It owns ${FSTACK_IP}, so a reply
-# means the TAP link is carrying packets in both directions.
-if ping -c 2 -W 2 "${FSTACK_IP}" >/dev/null 2>&1; then
-    check "F-Stack side answers ping" 1
-    fstack_up=1
-else
-    check "F-Stack side answers ping" 0
-    fstack_up=0
-    echo "      no reply from ${FSTACK_IP}: the TAP link is not passing traffic"
+# Does the userspace stack respond at all? It owns ${FSTACK_IP}, so a reply
+# means the link is carrying packets in both directions. Meaningless on
+# loopback, so skipped for the kernel build.
+fstack_up=1
+if [ "${STACK}" != "kernel" ]; then
+    if ping -c 2 -W 2 "${FSTACK_IP}" >/dev/null 2>&1; then
+        check "F-Stack side answers ping" 1
+    else
+        check "F-Stack side answers ping" 0
+        fstack_up=0
+        echo "      no reply from ${FSTACK_IP}: the link is not passing traffic"
+    fi
 fi
 
 echo

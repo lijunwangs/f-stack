@@ -32,6 +32,18 @@ to one; only the event loop needed real translation, and since the proxy only
 ever asks to watch an fd for read or write, a three-call abstraction
 (`ev_create`, `ev_watch`, `ev_wait`) covers both without emulating either.
 
+Verify both behave identically before trusting the layer. The kernel build
+runs over loopback with no veth, no DPDK and no root:
+
+```sh
+POC_ORIGIN=127.0.0.1:9443 POC_LISTEN_PORT=8443 \
+    ./poc_proxy_kernel > poc_kernel.log 2>&1 &
+STACK=kernel ./test_single_box.sh
+```
+
+If both builds pass the same three checks, the abstraction is sound and any
+later performance difference between them is attributable to the transport.
+
 This exists to make a comparison against a stock proxy interpretable. Measuring
 the POC against Envoy directly conflates three variables: userspace TCP versus
 kernel, OpenSSL versus BoringSSL, and our state machine versus a mature filter

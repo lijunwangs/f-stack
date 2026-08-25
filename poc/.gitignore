@@ -3,6 +3,7 @@ host_test
 origin_crt.pem
 origin_key.pem
 poc_ca.pem
+poc_kernel.log
 poc_proxy
 poc_proxy.log
 poc_proxy.pid
