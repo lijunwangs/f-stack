@@ -120,6 +120,33 @@ you want percentiles.
 Either way the harness reads the proxy's own `utime + stime` from
 `/proc/<pid>/stat` and reports cores consumed and cores per 1000 CPS.
 
+### Measured: F-Stack vs kernel on virtual links
+
+One core each, 30s steps, nginx origin, trivial scan, no HTTP parsing.
+
+| side | transport | saturation CPS | at conns | cores |
+|---|---|---|---|---|
+| F-Stack | `virtio_user` + `vhost-net` | 1047.8 | 200 | 1.00 |
+| kernel | veth + netns | 1254.2 | 200 | 1.00 |
+
+**F-Stack is 16% slower here, and this does not settle the platform question.**
+Both sides saturated one core over a virtual link with offloads off, which is
+the fairest comparison a single box allows, but two effects both favour the
+kernel and both disappear on real hardware:
+
+- `virtio_user` + `vhost-net` runs a kernel vhost worker doing copies, whose
+  CPU is *not* charged to F-Stack's process -- so its true cost exceeds the
+  1.00 cores shown. veth is nearly free by comparison: a direct skb handoff
+  between namespaces with no worker thread.
+- With `vfio-pci` there is no vhost thread and no kernel involvement at all,
+  while the kernel build acquires a real driver, interrupts and softirq.
+
+The design-relevant number is not the ratio but the magnitude: **both stacks
+cost roughly 0.8-1.0 cores per 1000 CPS** for a TLS-terminating, inspecting
+proxy. At the 20k CPS design point that is 16-25 cores for connection handling
+alone, against the design doc's estimate of about 12 -- consistent with the
+handshake measurement also coming in above budget.
+
 ### First measurement
 
 Kernel build, loopback, nginx origin, trivial scan, no HTTP parsing:

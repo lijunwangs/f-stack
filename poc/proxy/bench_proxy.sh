@@ -251,8 +251,12 @@ echo "${out}" | tail -20
 echo
 echo "---- accounting ----------------------------------------------"
 
-# Prefer the proxy's own count where we have it.
-if [ -n "${s0}" ] && [ -n "${s1}" ] && [ "${s1}" -gt "${s0}" ]; then
+# The proxy's session counter is authoritative for cps, where the generator
+# cannot account for close-delimited responses. Under keepalive it counts
+# almost nothing -- connections are reused -- so rps must come from the
+# generator, which handles that case correctly.
+if [ "${MODE}" = cps ] && [ -n "${s0}" ] && [ -n "${s1}" ] && \
+   [ "${s1}" -gt "${s0}" ]; then
     sessions=$((s1 - s0))
     rate=$(awk -v n="${sessions}" -v w="${wall}" 'BEGIN { printf "%.1f", n / w }')
     printf 'connections/s      %s   (from the proxy: %s sessions in %ss)\n' \
