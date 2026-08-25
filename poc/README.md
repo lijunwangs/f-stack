@@ -37,9 +37,15 @@ runs over loopback with no veth, no DPDK and no root:
 
 ```sh
 POC_ORIGIN=127.0.0.1:9443 POC_LISTEN_PORT=8443 \
+    POC_CA_OUT=poc_ca_kernel.pem \
     ./poc_proxy_kernel > poc_kernel.log 2>&1 &
 STACK=kernel ./test_single_box.sh
 ```
+
+Each build writes its own CA, because the two mint different keys -- verifying
+against the wrong one fails in a way that looks like a proxy bug. If an earlier
+`sudo` run left root-owned `poc_ca.pem` or `origin_*.pem` behind, remove them
+first: the unprivileged build cannot overwrite them.
 
 If both builds pass the same three checks, the abstraction is sound and any
 later performance difference between them is attributable to the transport.

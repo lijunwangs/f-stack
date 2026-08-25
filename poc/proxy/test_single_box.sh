@@ -22,6 +22,10 @@ GW_PORT=${GW_PORT:-8443}
 ORIGIN_PORT=${ORIGIN_PORT:-9443}
 TEST_HOST=${TEST_HOST:-origin.test.invalid}
 CANARY=${CANARY:-SECRET-CANARY}
+CACERT=${CACERT:-poc_ca.pem}
+if [ "${STACK}" = "kernel" ]; then
+    CACERT=${CACERT_KERNEL:-poc_ca_kernel.pem}
+fi
 fails=0
 
 check() {
@@ -46,10 +50,24 @@ else
 fi
 
 echo "3. generating an origin certificate for ${TEST_HOST}"
-openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
-    -keyout origin_key.pem -out origin_crt.pem -days 1 -nodes \
-    -subj "/CN=${TEST_HOST}" -addext "subjectAltName=DNS:${TEST_HOST}" \
-    >/dev/null 2>&1
+# Earlier sudo runs leave these owned by root; removal only needs write
+# permission on the directory, so this works either way.
+rm -f origin_key.pem origin_crt.pem
+if ! openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+        -keyout origin_key.pem -out origin_crt.pem -days 1 -nodes \
+        -subj "/CN=${TEST_HOST}" -addext "subjectAltName=DNS:${TEST_HOST}" \
+        2>/tmp/poc_req_err; then
+    echo "   openssl req failed:"
+    sed 's/^/     /' /tmp/poc_req_err
+    exit 1
+fi
+
+if [ ! -r "${CACERT}" ]; then
+    echo "   cannot read ${CACERT} -- start the proxy first, and make sure it"
+    echo "   could write its CA there (a root-owned file from an earlier sudo"
+    echo "   run will block it: rm -f ${CACERT})"
+    exit 1
+fi
 
 echo "4. starting the origin on ${KERNEL_IP}:${ORIGIN_PORT}"
 openssl s_server -quiet -accept "${KERNEL_IP}:${ORIGIN_PORT}" \
@@ -94,7 +112,7 @@ echo "6. tests"
 
 # The gateway must be reachable, and its leaf must chain to the POC CA with
 # hostname verification on -- that is interception plus forging working.
-if curl -sS --max-time 10 --cacert poc_ca.pem ${RESOLVE} \
+if curl -sS --max-time 10 --cacert "${CACERT}" ${RESOLVE} \
         "https://${TEST_HOST}:${GW_PORT}/" >/dev/null 2>&1; then
     check "fetch through the gateway succeeds" 1
     baseline=1
@@ -120,7 +138,7 @@ esac
 # dropped, so curl fails where the clean request above succeeded. This only
 # means anything if the clean request did succeed.
 if [ "${baseline}" = "1" ]; then
-    if curl -sS --max-time 10 --cacert poc_ca.pem ${RESOLVE} \
+    if curl -sS --max-time 10 --cacert "${CACERT}" ${RESOLVE} \
             -d "x=${CANARY}" "https://${TEST_HOST}:${GW_PORT}/" >/dev/null 2>&1; then
         check "request carrying the canary is blocked" 0
     else
