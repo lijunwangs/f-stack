@@ -39,14 +39,18 @@ B_PROC=${B_PROC:-poc_proxy_kernel}
 B_LOG=${B_LOG:-poc_kernel.log}
 B_NS=${B_NS:-}
 
-SWEEP=${SWEEP:-"10 25 50 100 200"}
-DUR=${DUR:-15}
+SWEEP=${SWEEP:-"25 50 100 200 400"}
+DUR=${DUR:-30}
 # Stop only after this many consecutive steps fail to beat the best seen.
 # One non-improving step is not a plateau: throughput often dips when the
 # generator starts contending, then recovers.
 STALL_STEPS=${STALL_STEPS:-2}
 OUT=${OUT:-compare_results.txt}
 DIR=$(cd "$(dirname "$0")" && pwd)
+
+# Command substitution swallows stdout, so keep a handle on the terminal for
+# diagnostics that must be seen while a step is running.
+exec 3>&1
 
 # Check the NAME resolves to the address. Testing whether a line starts with
 # the address is wrong: /etc/hosts already has "127.0.0.1 localhost", which
@@ -79,10 +83,22 @@ run_step() {
     }' | tail -1)
     _cps=$(echo "${result}" | awk '{ print ($1 == "" ? 0 : $1) }')
     if [ -z "${result}" ] || awk -v n="${_cps}" 'BEGIN { exit !(n + 0 <= 0) }'; then
-        # Either bench_proxy bailed or it measured nothing. Both need the
-        # subprocess output; reporting a bare zero hides the reason.
-        echo "${out}" | grep -vE '^[[:space:]]*$' | tail -10 |
-            sed 's/^/           | /' >&2
+        # Either bench_proxy bailed or it measured nothing. Show the command
+        # and its output on stdout -- on stderr this got separated from the
+        # captured stream and the failure looked unexplained.
+        {
+            echo "           ---- step produced no rate; command was:"
+            echo "           ${DIR}/bench_proxy.sh -t ${_host}:${_port}" \
+                 "-a ${_addr} -c ${_ca} -p ${_proc} -l ${_log}" \
+                 "-m ${_mode} -d ${DUR} -C ${_c}"
+            if [ -n "${out}" ]; then
+                echo "${out}" | grep -vE '^[[:space:]]*$' | tail -12 |
+                    sed 's/^/           | /'
+            else
+                echo "           | (no output at all from bench_proxy.sh)"
+            fi
+            echo "           ----"
+        } >&3
     fi
     echo "${result}"
 }
@@ -124,7 +140,7 @@ need_host "${A_ADDR}" "${A_HOST}" || exit 1
 need_host "${B_ADDR}" "${B_HOST}" || exit 1
 
 echo
-echo "saturation sweep (${DUR}s per step, stop below +${PLATEAU_PCT}%)"
+echo "saturation sweep (${DUR}s per step, stop after ${STALL_STEPS} steps without improvement)"
 saturate "${A_NAME}" "${A_HOST}" "${A_PORT}" "${A_ADDR}" "${A_CA}" \
          "${A_PROC}" "${A_LOG}" "${A_NS}"
 A_CPS=${SAT_CPS}; A_C=${SAT_C}; A_CORES=${SAT_CORES}
