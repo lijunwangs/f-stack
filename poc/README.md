@@ -63,11 +63,21 @@ find / -name libdpdk.pc 2>/dev/null
 
 ### Link errors for libjitterentropy or libzstd
 
-Static linking pulls in every transitive DPDK dependency, including optional
-ones this POC never uses. Install them:
+`libdpdk.pc` carries OpenSSL's *static* private dependencies transitively,
+which is where `-l:libjitterentropy.a` and `-lzstd` come from -- OpenSSL 3.5
+added a jitterentropy seed source and zstd compression. Since this POC links
+OpenSSL dynamically, `libcrypto.so` resolves those internally and they are
+spurious. The Makefile already filters out `-l:libjitterentropy.a`, which
+Ubuntu does not package at all. For zstd:
 
 ```sh
-sudo apt install -y libjitterentropy-dev libzstd-dev
+sudo apt install -y libzstd-dev
+```
+
+To drop a different one instead, override the filter:
+
+```sh
+make DPDK_DROP_LIBS="-l:libjitterentropy.a -lzstd"
 ```
 
 `DPDK_SHARED=1` looks like an easier way out and is not: F-Stack adds

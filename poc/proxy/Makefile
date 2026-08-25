@@ -41,7 +41,13 @@ LIBS += -Wl,--no-as-needed \
         $(filter-out -Wl$(comma)--as-needed,$(shell $(PKGCONF) --libs libdpdk)) \
         -lrte_net_bond
 else
-LIBS += $(shell $(PKGCONF) --static --libs libdpdk)
+# libdpdk.pc carries OpenSSL's *static* private dependencies transitively.
+# We link OpenSSL dynamically (-lcrypto -lssl below), so libcrypto.so already
+# resolves those internally and they are spurious here -- notably
+# -l:libjitterentropy.a, which Ubuntu does not even package. Override
+# DPDK_DROP_LIBS to keep one if a link actually needs it.
+DPDK_DROP_LIBS ?= -l:libjitterentropy.a
+LIBS += $(filter-out $(DPDK_DROP_LIBS),$(shell $(PKGCONF) --static --libs libdpdk))
 endif
 
 LIBS += -lrt -lm -ldl -lcrypto -lssl -lz -pthread -lnuma
