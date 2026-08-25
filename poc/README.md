@@ -64,18 +64,18 @@ find / -name libdpdk.pc 2>/dev/null
 ### Link errors for libjitterentropy or libzstd
 
 Static linking pulls in every transitive DPDK dependency, including optional
-ones. Either install them:
+ones this POC never uses. Install them:
 
 ```sh
 sudo apt install -y libjitterentropy-dev libzstd-dev
 ```
 
-or link DPDK dynamically and skip the chain entirely, which needs no extra
-packages because the shared objects carry their own dependencies:
-
-```sh
-make clean && make DPDK_SHARED=1
-```
+`DPDK_SHARED=1` looks like an easier way out and is not: F-Stack adds
+`rte_timer_meta_init` to `dpdk/lib/timer/` but never lists it in that
+library's `version.map`, so the symbol is present in the static archive and
+absent from `librte_timer.so`. Linking dynamically against the fork as shipped
+therefore fails on that symbol no matter what else is installed. Making it
+work means adding the symbol to the version map and rebuilding DPDK.
 
 The bench and the host tests need none of this — only `libssl-dev`.
 

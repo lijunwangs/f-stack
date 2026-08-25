@@ -25,15 +25,21 @@ CFLAGS += $(shell $(PKGCONF) --cflags libdpdk)
 # then fail on hundreds of rte_* symbols from libfstack.
 LIBS += -L${FF_PATH}/lib -Wl,--whole-archive,-lfstack,--no-whole-archive
 
-# Static by default, matching the in-tree examples. Static linking drags in
-# every transitive DPDK dependency (libjitterentropy, libzstd, ...), so if
-# those are missing and cannot be installed, build with DPDK_SHARED=1 to link
-# DPDK dynamically instead -- the shared objects record their own deps.
+# Static is the supported path. It drags in every transitive DPDK dependency,
+# so install libjitterentropy-dev and libzstd-dev if the link complains.
+#
+# DPDK_SHARED=1 does NOT work against this fork as shipped: F-Stack adds
+# rte_timer_meta_init to dpdk/lib/timer/ but never lists it in that library's
+# version.map, so the symbol exists in the static archive and is absent from
+# librte_timer.so. Using it requires adding the symbol to the version.map and
+# rebuilding DPDK; -lrte_net_bond is also needed, since pkg-config --libs
+# lists only the core libraries and not the drivers.
 ifeq ($(DPDK_SHARED),1)
 # Drop DPDK's own --as-needed, which would otherwise override ours.
 comma := ,
 LIBS += -Wl,--no-as-needed \
-        $(filter-out -Wl$(comma)--as-needed,$(shell $(PKGCONF) --libs libdpdk))
+        $(filter-out -Wl$(comma)--as-needed,$(shell $(PKGCONF) --libs libdpdk)) \
+        -lrte_net_bond
 else
 LIBS += $(shell $(PKGCONF) --static --libs libdpdk)
 endif
