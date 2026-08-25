@@ -143,6 +143,16 @@ cpu_ticks() {
            print $(n + 12) + $(n + 13) }' "/proc/${PID}/stat"
 }
 
+# System-wide busy jiffies. Process accounting misses softirq and ksoftirqd,
+# where a kernel-stack proxy does much of its TCP work, so the true cost of
+# the kernel build sits above its process figure. F-Stack does all stack work
+# in process, so its process figure is essentially complete.
+sys_busy() {
+    awk '/^cpu / { idle = $5 + $6; total = 0;
+                   for (i = 2; i <= NF; i++) total += $i;
+                   print total - idle }' /proc/stat
+}
+
 HZ=$(getconf CLK_TCK)
 NPROC=$(getconf _NPROCESSORS_ONLN)
 
@@ -161,6 +171,7 @@ poc_sessions() {
 }
 
 s0=$(poc_sessions)
+b0=$(sys_busy)
 t0=$(cpu_ticks)
 start=$(date +%s)
 
@@ -196,6 +207,7 @@ esac
 
 end=$(date +%s)
 t1=$(cpu_ticks)
+b1=$(sys_busy)
 # Give the proxy a moment to emit a stats line covering the tail of the run.
 [ -n "${LOGFILE}" ] && sleep 6
 s1=$(poc_sessions)
@@ -231,12 +243,29 @@ else
 fi
 printf 'proxy cpu          %s s over %s s wall\n' "$((cpu_ms / 1000))" "${wall}"
 printf 'proxy cores        %s of %s\n' "${cores}" "${NPROC}"
+sys_cores=$(awk -v d="$((b1 - b0))" -v hz="${HZ}" -v w="${wall}" \
+    'BEGIN { printf "%.2f", d / hz / w }')
+printf 'system busy cores  %s   (includes the generator and origin)\n' "${sys_cores}"
 if [ -n "${rate}" ]; then
     printf 'cores per 1k cps   %s\n' \
         "$(awk -v c="${cores}" -v r="${rate}" 'BEGIN { if (r > 0) printf "%.3f", c * 1000 / r; else print "n/a" }')"
 fi
 echo
-echo "Report cores per 1k cps and the tail latency together. A rate difference"
-echo "alone says nothing without the CPU it cost, and neither means anything"
-echo "unless the compared proxies are doing equivalent work: TLS termination,"
-echo "an upstream TLS connection, and the same inspection."
+cat <<'NOTE'
+
+Reading these numbers
+  Compared proxies must do equivalent work -- TLS termination, an upstream
+  TLS connection, and the same inspection. Passthrough proves nothing.
+
+  Process CPU undercounts a kernel-stack proxy: softirq and ksoftirqd are
+  not charged to it. System busy cores overcounts, since the generator and
+  origin share this box. The truth is between them.
+
+  Do NOT compare F-Stack to the kernel on CPU at fixed load. With
+  idle_sleep=0 an F-Stack worker spins, burning a full core at any load, so
+  the figure is meaningless. Pin each side to N cores instead -- taskset for
+  the kernel build, lcore_mask for F-Stack -- push until the latency budget
+  breaks, and compare maximum CPS at equal core count. Cores at fixed load
+  is the right metric only between two event-driven proxies, such as the
+  kernel build against Envoy.
+NOTE

@@ -110,6 +110,37 @@ you want percentiles.
 Either way the harness reads the proxy's own `utime + stime` from
 `/proc/<pid>/stat` and reports cores consumed and cores per 1000 CPS.
 
+### First measurement
+
+Kernel build, loopback, nginx origin, trivial scan, no HTTP parsing:
+
+| | |
+|---|---|
+| connection rate | 680 CPS (13,604 sessions in 20 s) |
+| proxy CPU | 0.79 cores |
+| **cores per 1000 CPS** | **1.161** |
+
+That cross-checks M0a: 542 µs per handshake pair predicts 0.542 cores per 1000
+CPS, so handshakes are about 47% of the end-to-end cost and the rest is socket
+churn, epoll, the relay pass and the scan. Extrapolated to the 20k CPS design
+point that is ~23 cores for the connection path alone — roughly twice the
+design doc's estimate for it, and worth revisiting once the same figure exists
+for the F-Stack build on real hardware.
+
+### Comparing a busy-polling stack fairly
+
+**Do not compare F-Stack against the kernel on CPU at fixed load.** With
+`idle_sleep=0` an F-Stack worker spins, consuming a full core at any offered
+load, so the figure carries no information. Process CPU also undercounts the
+kernel build, since softirq and `ksoftirqd` are not charged to the process
+while F-Stack does all its stack work in process where it is counted — the
+comparison would flatter the kernel twice over.
+
+| Comparison | Method |
+|---|---|
+| kernel build vs Envoy | cores at fixed load; both are event-driven and idle when unloaded |
+| F-Stack vs kernel | pin each to N cores (`taskset` / `lcore_mask`), push until the latency budget breaks, compare **maximum CPS at equal core count** |
+
 Two cautions. Any comparison is meaningless unless both proxies do equivalent
 work -- TLS termination, an upstream TLS connection, and the same inspection;
 Envoy in passthrough proves nothing. And do not draw platform conclusions from
