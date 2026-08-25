@@ -78,25 +78,29 @@ kills it on exit, so a passing functional test does not mean one is running.
 threaded and caps the measured rate well below what the proxy can do.
 
 ```sh
-sudo apt install -y nghttp2-client nginx  # h2load, and a real origin
-./origin.sh start                         # 127.0.0.1:9443
+sudo apt install -y wrk nginx nghttp2-client   # generators and a real origin
+./origin.sh start                              # 127.0.0.1:9443
 
-# kernel build
+# connection rate: a new TLS handshake per request
 ./bench_proxy.sh -t origin.test.invalid:8443 -a 127.0.0.1 \
-                 -c poc_ca_kernel.pem -p poc_proxy_kernel
+                 -c poc_ca_kernel.pem -p poc_proxy_kernel -m cps
 
-# F-Stack build
-sudo ./bench_proxy.sh -t origin.test.invalid:8443 -a 10.99.0.2 \
-                      -c poc_ca.pem -p poc_proxy
+# throughput: keepalive, exercising the relay and scan path
+./bench_proxy.sh -t origin.test.invalid:8443 -a 127.0.0.1 \
+                 -c poc_ca_kernel.pem -p poc_proxy_kernel -m rps
 
-# Envoy, or anything else, for comparison
-./bench_proxy.sh -t origin.test.invalid:10000 -a 127.0.0.1 \
-                 -c envoy_ca.pem -p envoy
+# same harness against anything else, Envoy included
+./bench_proxy.sh -t origin.test.invalid:10000 -a 127.0.0.1 -p envoy -m cps
 ```
 
-It drives a fixed connection count with `Connection: close`, so requests per
-second *is* the connection rate, and reads the proxy's own `utime + stime` from
-`/proc/<pid>/stat` to report cores consumed and cores per 1000 CPS.
+`-m cps` is the one that matters most, since the measured budget puts the cost
+in handshakes. It requires **wrk**: h2load does not reconnect after the server
+closes, so with `Connection: close` it issues one request per client and then
+sits idle reporting a rate of zero. `-m rps` uses keepalive and measures the
+relay instead, where h2load is fine.
+
+Either way the harness reads the proxy's own `utime + stime` from
+`/proc/<pid>/stat` and reports cores consumed and cores per 1000 CPS.
 
 Two cautions. Any comparison is meaningless unless both proxies do equivalent
 work -- TLS termination, an upstream TLS connection, and the same inspection;
@@ -357,5 +361,9 @@ These are scoped out so the POC stays a POC. None are unknowns.
   The real engine keeps Vectorscan stream state across buffers.
 - **Origin chain is not validated.** Production fails closed on a bad upstream
   chain; the POC accepts anything.
+- **No ALPN.** The forged context negotiates nothing, so clients log "server
+  does not support ALPN" and fall back to HTTP/1.1. Harmless here; the real
+  implementation must mirror the origin's ALPN, and must offer h2 (§08 of the
+  design doc — gRPC cannot fall back).
 - **No policy, no HTTP parsing, no HTTP/2, no connection pool, no control
   plane, no monitor-only mode.**

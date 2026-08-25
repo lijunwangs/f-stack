@@ -6,8 +6,15 @@
 # actually uses. Works against either build, and against Envoy or any other
 # proxy -- point it at a host:port and give it the process to account for.
 #
-#   ./bench_proxy.sh -t <host>:<port> -a <resolve-addr> -c <cacert> \
-#                    -p <pid|name> [-d seconds] [-C connections]
+#   ./bench_proxy.sh -t <host>:<port> -a <addr> -c <cacert> -p <pid|name> \
+#                    [-m cps|rps] [-d seconds] [-C connections]
+#
+# Two different measurements:
+#   cps  new TLS connection per request (Connection: close). Handshake bound,
+#        which is where the budget says the cost is. Needs wrk: h2load does
+#        not reconnect after the server closes, so it would do one request
+#        per client and report nothing.
+#   rps  keepalive. Measures the relay and inspection path instead.
 #
 # Example, kernel build:
 #   ./bench_proxy.sh -t origin.test.invalid:8443 -a 127.0.0.1 \
@@ -21,6 +28,7 @@ CACERT=""
 PROC=""
 DURATION=20
 CONNS=50
+MODE=cps
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -30,6 +38,7 @@ while [ $# -gt 0 ]; do
         -p) PROC=$2; shift 2 ;;
         -d) DURATION=$2; shift 2 ;;
         -C) CONNS=$2; shift 2 ;;
+        -m) MODE=$2; shift 2 ;;
         *) echo "unknown argument: $1"; exit 1 ;;
     esac
 done
@@ -74,17 +83,36 @@ esac
     echo "cannot find process '${PROC}'"; exit 1
 }
 
-# Pick a generator. h2load and wrk both report percentiles and can be told to
-# open a fresh connection per request, which is what makes this a CPS test.
-if command -v h2load >/dev/null 2>&1; then
-    GEN=h2load
-elif command -v wrk >/dev/null 2>&1; then
-    GEN=wrk
-else
-    echo "need h2load (nghttp2-client) or wrk:"
-    echo "  sudo apt install -y nghttp2-client"
+# Generator choice follows the mode. Only wrk reconnects after the server
+# closes the connection, so only wrk can measure a connection rate.
+case "${MODE}" in
+cps)
+    if command -v wrk >/dev/null 2>&1; then
+        GEN=wrk
+    else
+        echo "cps mode needs wrk, which reconnects after each close:"
+        echo "  sudo apt install -y wrk"
+        echo
+        echo "h2load does one request per client and stops, so it cannot"
+        echo "measure a connection rate. Use -m rps for a keepalive test."
+        exit 1
+    fi
+    ;;
+rps)
+    if command -v h2load >/dev/null 2>&1; then
+        GEN=h2load
+    elif command -v wrk >/dev/null 2>&1; then
+        GEN=wrk
+    else
+        echo "need h2load or wrk: sudo apt install -y nghttp2-client wrk"
+        exit 1
+    fi
+    ;;
+*)
+    echo "mode must be cps or rps"
     exit 1
-fi
+    ;;
+esac
 
 # One real request before loading: a dead origin or a stopped proxy otherwise
 # produces a confident-looking table full of zeros.
@@ -113,32 +141,40 @@ NPROC=$(getconf _NPROCESSORS_ONLN)
 
 echo "target     ${TARGET} via ${ADDR}"
 echo "process    pid ${PID} ($(tr -d '\0' < /proc/${PID}/comm))"
+echo "mode       ${MODE} ($([ "${MODE}" = cps ] && echo "new connection per request" || echo "keepalive"))"
 echo "generator  ${GEN}, ${CONNS} connections, ${DURATION}s"
 echo
 
 t0=$(cpu_ticks)
 start=$(date +%s)
 
+if [ "${MODE}" = cps ]; then
+    CLOSE='-H "Connection: close"'
+else
+    CLOSE=''
+fi
+
 case "${GEN}" in
 h2load)
-    # --h1 keeps it HTTP/1.1; Connection: close forces a new TLS handshake
-    # per request, so requests/s is the connection rate.
-    # h2load does not verify the peer certificate, so ${CACERT} is unused
-    # here; the functional test already proved verification works.
+    # No Connection: close here -- h2load would issue one request per client
+    # and then sit idle, reporting a rate of zero.
     out=$(h2load --h1 -c "${CONNS}" -D "${DURATION}" \
-              -H "Connection: close" \
               "https://${HOST}:${PORT}/" 2>&1) || true
     rate=$(echo "${out}" | awk '/finished in/ { for (i=1;i<=NF;i++) if ($i=="req/s,") print $(i-1) }' | head -1)
-    # "time for request:   min  max  mean  sd  +/- sd"
     lat=$(echo "${out}" | awk '/time for request:/ { print "min "$4"  mean "$6"  max "$5 }' | head -1)
-    lat="${lat}   (h2load reports mean/max, not percentiles -- use wrk for tails)"
+    lat="${lat}   (h2load reports mean/max, not percentiles)"
     ;;
 wrk)
-    out=$(wrk -t4 -c"${CONNS}" -d"${DURATION}s" --latency \
-              -H "Connection: close" \
-              "https://${HOST}:${PORT}/" 2>&1) || true
+    if [ "${MODE}" = cps ]; then
+        out=$(wrk -t8 -c"${CONNS}" -d"${DURATION}s" --latency \
+                  -H "Connection: close" \
+                  "https://${HOST}:${PORT}/" 2>&1) || true
+    else
+        out=$(wrk -t8 -c"${CONNS}" -d"${DURATION}s" --latency \
+                  "https://${HOST}:${PORT}/" 2>&1) || true
+    fi
     rate=$(echo "${out}" | awk '/Requests\/sec/ { print $2 }')
-    lat=$(echo "${out}" | awk '/50%|99%/ { printf "%s %s  ", $1, $2 }')
+    lat=$(echo "${out}" | awk '/ 50%| 99%/ { printf "%s %s  ", $1, $2 }')
     ;;
 esac
 
