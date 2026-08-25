@@ -78,12 +78,18 @@ fi
 # excluding this script.
 case "${PROC}" in
     ''|*[!0-9]*)
-        matches=$(pgrep -x "${PROC}" 2>/dev/null)
-        [ -z "${matches}" ] && \
-            matches=$(pgrep -x "$(printf '%.15s' "${PROC}")" 2>/dev/null)
-        [ -z "${matches}" ] && \
-            matches=$(pgrep -f "${PROC}" 2>/dev/null | grep -v "^$$\$")
-        count=$(echo "${matches}" | grep -c '[0-9]' || true)
+        # Every one of these needs || true: pgrep exits 1 when it matches
+        # nothing, and a bare failing assignment under set -e kills the
+        # script before it has printed anything at all.
+        matches=$(pgrep -x "${PROC}" 2>/dev/null || true)
+        if [ -z "${matches}" ]; then
+            # comm is truncated to 15 characters by the kernel.
+            matches=$(pgrep -x "$(printf '%.15s' "${PROC}")" 2>/dev/null || true)
+        fi
+        if [ -z "${matches}" ]; then
+            matches=$(pgrep -f "${PROC}" 2>/dev/null | grep -v "^$$\$" || true)
+        fi
+        count=$(echo "${matches}" | grep -c '[0-9]' 2>/dev/null || echo 0)
         # Picking one of several silently attributes CPU to whichever process
         # pgrep happened to list first -- typically a stale idle instance,
         # which reads as zero cores and zero throughput.
