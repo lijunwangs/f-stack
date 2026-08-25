@@ -14,6 +14,8 @@ set -e
 DIR=$(cd "$(dirname "$0")" && pwd)
 ADDR=${2:-127.0.0.1}
 PORT=${3:-9443}
+# `stop` takes the same optional [addr] [port]; the port is what matters,
+# since the listener may be bound to any local address.
 HOSTNAME_CN=${TEST_HOST:-origin.test.invalid}
 CONF="${DIR}/origin_nginx.conf"
 PIDFILE="${DIR}/origin_nginx.pid"
@@ -30,6 +32,7 @@ gen_cert() {
 write_conf() {
     cat > "${CONF}" <<CONFEOF
 worker_processes 4;
+worker_rlimit_nofile 65535;
 daemon on;
 pid ${PIDFILE};
 error_log ${DIR}/origin_nginx_error.log warn;
@@ -57,8 +60,29 @@ CONFEOF
     mkdir -p "${DIR}/nginx_tmp"
 }
 
+# Every pid listening on the port, whatever local address it bound.
+port_holders() {
+    ss -H -tlnp 2>/dev/null | awk -v p=":${PORT}" '
+        $4 ~ p"$" { while (match($0, /pid=[0-9]+/)) {
+            print substr($0, RSTART + 4, RLENGTH - 4)
+            $0 = substr($0, RSTART + RLENGTH) } }' | sort -u
+}
+
 case "${1:-}" in
 start)
+    holders=$(port_holders)
+    if [ -n "${holders}" ]; then
+        echo "port ${PORT} is already held:"
+        for h in ${holders}; do
+            printf '  pid %-8s %s\n' "${h}" \
+                "$(tr '\0' ' ' < "/proc/${h}/cmdline" 2>/dev/null)"
+        done
+        echo
+        echo "Run '$0 stop' first -- a stale s_server from test_single_box.sh"
+        echo "is the usual culprit; its trap does not fire if the script is"
+        echo "interrupted."
+        exit 1
+    fi
     gen_cert
     if command -v nginx >/dev/null 2>&1; then
         write_conf
@@ -89,6 +113,15 @@ stop)
         kill "$(cat "${DIR}/origin_sserver.pid")" 2>/dev/null || true
         rm -f "${DIR}/origin_sserver.pid"
     fi
+    # Anything else still holding the port, however it was started.
+    for h in $(port_holders); do
+        echo "  killing pid ${h} still on port ${PORT}"
+        kill "${h}" 2>/dev/null || true
+    done
+    sleep 1
+    for h in $(port_holders); do
+        kill -9 "${h}" 2>/dev/null || true
+    done
     echo "origin stopped"
     ;;
 *)
