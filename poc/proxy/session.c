@@ -274,7 +274,7 @@ static int begin_client_tls(struct session *s)
 /*
  * Move whatever is readable from one leg to the other.
  * Returns 0 to keep going, 1 when the source has closed cleanly,
- * -1 on a real error or a scan match.
+ * -2 when the scan matched, -1 on a real error.
  */
 static int relay_one(struct session *s, SSL *from, SSL *to, int to_fd,
                      BIO *to_wbio)
@@ -285,10 +285,8 @@ static int relay_one(struct session *s, SSL *from, SSL *to, int to_fd,
     while ((n = SSL_read(from, buf, sizeof(buf))) > 0) {
         int off = 0;
 
-        if (scan_buf(buf, (size_t)n)) {
-            stats.blocked++;
-            return -1;          /* POC: drop the session on a match */
-        }
+        if (scan_buf(buf, (size_t)n))
+            return -2;          /* POC: drop the session on a match */
         while (off < n) {
             int w = SSL_write(to, buf + off, n - off);
 
@@ -315,6 +313,15 @@ static int relay_one(struct session *s, SSL *from, SSL *to, int to_fd,
  * flush it, or the peer sees a truncated stream. Responses delimited by
  * connection close -- which is what s_server -www produces -- depend on this.
  */
+/* A scan match is policy doing its job, not a failure. */
+static void blocked(struct session *s)
+{
+    stats.blocked++;
+    if (stats.blocked <= 20)
+        fprintf(stderr, "[poc] blocked by scan: %s\n", s->sni);
+    session_close(s);
+}
+
 static void finish(struct session *s)
 {
     if (s->cssl) {
@@ -459,6 +466,8 @@ void session_event(struct session *s, int fd, int filter)
                 r = 1;          /* socket closed under us */
             if (r > 0)
                 finish(s);
+            else if (r == -2)
+                blocked(s);
             else if (r < 0)
                 fail(s, "relay to origin");
         } else {
@@ -472,6 +481,8 @@ void session_event(struct session *s, int fd, int filter)
                 r = 1;
             if (r > 0)
                 finish(s);
+            else if (r == -2)
+                blocked(s);
             else if (r < 0)
                 fail(s, "relay to client");
         }

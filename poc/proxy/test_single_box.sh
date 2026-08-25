@@ -91,9 +91,11 @@ fi
 
 # The certificate the client sees must be ours, not the origin's. If the
 # issuer is the origin itself, traffic is passing through un-intercepted.
+# s_client prints the chain as "i:CN = ...", not "Issuer:", and the exact
+# format moves between versions -- so pull the leaf out and ask x509 directly.
 issuer=$(echo | timeout 10 openssl s_client -connect "${FSTACK_IP}:${GW_PORT}" \
-         -servername "${TEST_HOST}" 2>/dev/null |
-         sed -n 's/^ *[Ii]ssuer: *//p' | head -1)
+         -servername "${TEST_HOST}" -showcerts 2>/dev/null |
+         openssl x509 -noout -issuer 2>/dev/null)
 case "${issuer}" in
     *POC*CA*) check "served leaf is issued by the POC CA" 1 ;;
     *)        check "served leaf is issued by the POC CA" 0
