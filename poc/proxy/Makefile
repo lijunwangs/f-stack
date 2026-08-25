@@ -14,6 +14,9 @@ endif
 PKGCONF ?= pkg-config
 
 CFLAGS += -O2 -g -Wall -Wextra -Wno-unused-parameter -I.
+# Take the F-Stack headers from the tree, so `make install` in lib/ is not
+# a prerequisite for building the POC.
+CFLAGS += -I${FF_PATH}/lib
 CFLAGS += $(shell $(PKGCONF) --cflags libdpdk)
 
 LIBS += $(shell $(PKGCONF) --static --libs libdpdk)

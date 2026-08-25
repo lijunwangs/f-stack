@@ -37,9 +37,11 @@ export PKG_CONFIG_PATH=/usr/local/lib/x86_64-linux-gnu/pkgconfig:/usr/local/lib6
 pkg-config --modversion libdpdk        # expect 24.11.x
 
 # 4. the F-Stack library (slow: it builds the FreeBSD sources)
-export FF_PATH=$(pwd)/../..            # or wherever the repo lives
+export FF_PATH=~/f-stack               # wherever the repo lives
 cd $FF_PATH/lib
 make -j$(nproc)
+# `make install` is optional: the POC takes headers and libfstack.a straight
+# from the tree. The in-tree examples do need it.
 
 # 5. the POC
 cd $FF_PATH/poc/proxy
