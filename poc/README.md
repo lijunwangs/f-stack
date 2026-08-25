@@ -174,6 +174,32 @@ The namespace is not optional: an address on a veth in the same namespace is
 still a local address, so the kernel delivers via `lo` and the veth is never
 touched. Pass `-N poc_peer` to `bench_proxy.sh` to drive load from inside it.
 
+### Running the comparison
+
+`compare.sh` automates it: sweep concurrency against each proxy until the
+connection rate plateaus, then measure latency at half that load, then print a
+table with the caveats attached.
+
+```sh
+# side A: F-Stack on one lcore over virtio_user
+sudo LINK_MODE=virtio ./poc_ctl.sh start
+
+# side B: the kernel build, pinned to one core so the counts match
+taskset -c 4 env POC_ORIGIN=10.98.0.1:9443 POC_LISTEN_PORT=8444 \
+    POC_CA_OUT=poc_ca_kernel.pem ./poc_proxy_kernel > poc_kernel.log 2>&1 &
+
+./origin.sh start 10.98.0.1 9443
+sudo ./compare.sh
+```
+
+Everything is configurable through the environment (`A_*` for side A, `B_*` for
+side B, plus `SWEEP`, `DUR`, `PLATEAU_PCT`), so the same script compares either
+build against Envoy or anything else that terminates TLS. Results land in
+`compare_results.txt` with the caveats in the file, not just on screen.
+
+Sides run sequentially, never together — on one box they would otherwise
+compete for cores and both numbers would be wrong.
+
 ### Comparing a busy-polling stack fairly
 
 **Do not compare F-Stack against the kernel on CPU at fixed load.** With

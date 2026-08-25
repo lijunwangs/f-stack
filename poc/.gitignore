@@ -1,4 +1,5 @@
 *.dSYM/
+compare_results.txt
 host_test
 nginx_tmp/
 origin_crt.pem

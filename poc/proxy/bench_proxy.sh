@@ -261,6 +261,11 @@ if [ -n "${rate}" ]; then
         "$(awk -v c="${cores}" -v r="${rate}" 'BEGIN { if (r > 0) printf "%.3f", c * 1000 / r; else print "n/a" }')"
 fi
 echo
+printf 'RESULT cps=%s cores=%s sys_cores=%s per1k=%s conns=%s mode=%s\n' \
+    "${rate:-0}" "${cores}" "${sys_cores}" \
+    "$(awk -v c="${cores}" -v r="${rate:-0}" 'BEGIN { if (r > 0) printf "%.3f", c * 1000 / r; else print "0" }')" \
+    "${CONNS}" "${MODE}"
+
 cat <<'NOTE'
 
 Reading these numbers
