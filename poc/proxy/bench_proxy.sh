@@ -42,6 +42,18 @@ done
 HOST=$(echo "${TARGET}" | cut -d: -f1)
 PORT=$(echo "${TARGET}" | cut -d: -f2)
 
+# Load generators have no --resolve, and the proxy keys everything on SNI, so
+# an IP in the URL would arrive with no SNI at all. The name has to resolve.
+if ! getent hosts "${HOST}" | grep -q "${ADDR}"; then
+    echo "${HOST} does not resolve to ${ADDR}. Add it once:"
+    echo
+    echo "  echo '${ADDR} ${HOST}' | sudo tee -a /etc/hosts"
+    echo
+    echo "Neither h2load nor wrk supports --resolve, and sending an IP in the"
+    echo "URL means no SNI, which this proxy rejects."
+    exit 1
+fi
+
 # Resolve the process to account for. The kernel truncates comm to 15
 # characters, so an exact match on a longer binary name never succeeds --
 # fall back to the truncated form, then to the full command line while
@@ -95,12 +107,15 @@ case "${GEN}" in
 h2load)
     # --h1 keeps it HTTP/1.1; Connection: close forces a new TLS handshake
     # per request, so requests/s is the connection rate.
+    # h2load does not verify the peer certificate, so ${CACERT} is unused
+    # here; the functional test already proved verification works.
     out=$(h2load --h1 -c "${CONNS}" -D "${DURATION}" \
               -H "Connection: close" \
-              ${CACERT:+--ca-file="${CACERT}"} \
               "https://${HOST}:${PORT}/" 2>&1) || true
     rate=$(echo "${out}" | awk '/finished in/ { for (i=1;i<=NF;i++) if ($i=="req/s,") print $(i-1) }' | head -1)
-    lat=$(echo "${out}" | awk '/time for request:/ { print "min "$4"  mean "$5"  p90 "$7 }' | head -1)
+    # "time for request:   min  max  mean  sd  +/- sd"
+    lat=$(echo "${out}" | awk '/time for request:/ { print "min "$4"  mean "$6"  max "$5 }' | head -1)
+    lat="${lat}   (h2load reports mean/max, not percentiles -- use wrk for tails)"
     ;;
 wrk)
     out=$(wrk -t4 -c"${CONNS}" -d"${DURATION}s" --latency \
