@@ -12,9 +12,15 @@ set -e
 PIDFILE=${PIDFILE:-./poc_proxy.pid}
 LOGFILE=${LOGFILE:-./poc_proxy.log}
 CONF=${CONF:-config.ini}
+# LINK_MODE=veth   veth pair + af_packet PMD (packets still cross the kernel)
+# LINK_MODE=virtio virtio_user + vhost-net: a real DPDK datapath, so this is
+#                  the mode to measure on when no physical NIC is available.
+LINK_MODE=${LINK_MODE:-veth}
 HOST_IF=${HOST_IF:-ffhost}
 DPDK_IF=${DPDK_IF:-ffdpdk}
 KERNEL_IP=${KERNEL_IP:-10.99.0.1}
+VIRTIO_IF=${VIRTIO_IF:-ffvu0}
+VIRTIO_KERNEL_IP=${VIRTIO_KERNEL_IP:-10.98.0.1}
 
 POC_ORIGIN=${POC_ORIGIN:-10.99.0.1:9443}
 POC_LISTEN_PORT=${POC_LISTEN_PORT:-8443}
@@ -27,7 +33,31 @@ running() {
 
 # af_packet binds a raw socket at EAL init, so the pair must exist and be up
 # before the gateway starts. Idempotent.
+# vhost-net creates the kernel-side interface during EAL init, so it can only
+# be configured after the gateway starts.
+setup_virtio_link() {
+    i=0
+    while ! ip link show "${VIRTIO_IF}" >/dev/null 2>&1; do
+        i=$((i + 1))
+        [ "${i}" -gt 20 ] && {
+            echo "warning: ${VIRTIO_IF} never appeared -- is vhost_net loaded?"
+            return 1
+        }
+        sleep 1
+    done
+    ip addr replace "${VIRTIO_KERNEL_IP}/24" dev "${VIRTIO_IF}"
+    ip link set "${VIRTIO_IF}" up
+    ethtool -K "${VIRTIO_IF}" tx off rx off gso off tso off gro off \
+        >/dev/null 2>&1 || true
+    echo "link: ${VIRTIO_IF} (kernel, ${VIRTIO_KERNEL_IP}) <-> virtio_user (DPDK)"
+}
+
 setup_link() {
+    if [ "${LINK_MODE}" = virtio ]; then
+        modprobe vhost_net 2>/dev/null || true
+        [ -c /dev/vhost-net ] || echo "warning: /dev/vhost-net missing"
+        return 0
+    fi
     if ! ip link show "${DPDK_IF}" >/dev/null 2>&1; then
         ip link add "${HOST_IF}" type veth peer name "${DPDK_IF}"
     fi
@@ -76,7 +106,11 @@ start)
         exit 1
     fi
     echo "started as pid $(cat "${PIDFILE}"), logging to ${LOGFILE}"
-    echo "link: ${HOST_IF} (kernel, ${KERNEL_IP}) <-> ${DPDK_IF} (DPDK)"
+    if [ "${LINK_MODE}" = virtio ]; then
+        setup_virtio_link
+    else
+        echo "link: ${HOST_IF} (kernel, ${KERNEL_IP}) <-> ${DPDK_IF} (DPDK)"
+    fi
     echo "next: sudo ./test_single_box.sh"
     ;;
 

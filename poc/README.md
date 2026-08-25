@@ -127,6 +127,47 @@ point that is ~23 cores for the connection path alone — roughly twice the
 design doc's estimate for it, and worth revisiting once the same figure exists
 for the F-Stack build on real hardware.
 
+### Choosing a link for F-Stack
+
+Three ways to reach the kernel from F-Stack without a physical NIC, in
+increasing order of realism:
+
+| Link | What it is | Verdict |
+|---|---|---|
+| `net_tap` | one syscall per packet, and the DPDK port *is* the kernel netdev | **unusable** -- shared MAC, ARP self-drop |
+| `net_af_packet` | packet-mmap rings; packets still cross the kernel's packet path | works, but userspace TCP *plus* kernel packet path -- the worst of both |
+| `virtio_user` + `vhost-net` | a real DPDK poll-mode driver: shared-memory virtqueues, no syscall per packet | **use this** when there is no NIC |
+| physical NIC + `vfio-pci` | the real thing | the only basis for a final verdict |
+
+```sh
+sudo modprobe vhost_net
+cp config.ini.virtio config.ini          # set lcore_mask
+sudo LINK_MODE=virtio ./poc_ctl.sh start # configures ffvu0 after EAL init
+```
+
+`config.ini.virtio` pins an explicit `mac=` so the DPDK port and the kernel tap
+can never share an address -- the failure that made `net_tap` unusable.
+
+Measuring F-Stack over `af_packet` and calling it a kernel-bypass result would
+be self-defeating: those packets go through the kernel too.
+
+### A symmetric rig for either stack
+
+`rig.sh` puts the client and origin in a network namespace so both stacks reach
+the same peers over the same link, rather than the kernel build getting
+loopback while F-Stack crosses a veth.
+
+```sh
+sudo ./rig.sh up kernel     # poc_host keeps the address for the kernel proxy
+sudo ./rig.sh up fstack     # poc_host has none; DPDK owns it
+sudo ./rig.sh status
+sudo ./rig.sh down
+```
+
+The namespace is not optional: an address on a veth in the same namespace is
+still a local address, so the kernel delivers via `lo` and the veth is never
+touched. Pass `-N poc_peer` to `bench_proxy.sh` to drive load from inside it.
+
 ### Comparing a busy-polling stack fairly
 
 **Do not compare F-Stack against the kernel on CPU at fixed load.** With

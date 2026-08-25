@@ -35,6 +35,7 @@ DURATION=20
 CONNS=50
 MODE=cps
 LOGFILE=""
+NETNS=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -46,6 +47,7 @@ while [ $# -gt 0 ]; do
         -C) CONNS=$2; shift 2 ;;
         -m) MODE=$2; shift 2 ;;
         -l) LOGFILE=$2; shift 2 ;;
+        -N) NETNS=$2; shift 2 ;;
         *) echo "unknown argument: $1"; exit 1 ;;
     esac
 done
@@ -123,7 +125,7 @@ esac
 
 # One real request before loading: a dead origin or a stopped proxy otherwise
 # produces a confident-looking table full of zeros.
-if ! curl -sS --max-time 10 ${CACERT:+--cacert "${CACERT}"} \
+if ! ${NSX} curl -sS --max-time 10 ${CACERT:+--cacert "${CACERT}"} \
         "https://${HOST}:${PORT}/" >/dev/null 2>&1; then
     echo "preflight failed: no successful request through ${TARGET}."
     echo
@@ -135,6 +137,14 @@ if ! curl -sS --max-time 10 ${CACERT:+--cacert "${CACERT}"} \
     echo "test_single_box.sh starts an origin and kills it on exit, so a"
     echo "functional test passing does not mean one is running now."
     exit 1
+fi
+
+# Run the generator in a namespace so client traffic crosses the rig's link
+# rather than being short-circuited as local.
+if [ -n "${NETNS}" ]; then
+    NSX="ip netns exec ${NETNS}"
+else
+    NSX=""
 fi
 
 cpu_ticks() {
@@ -185,7 +195,7 @@ case "${GEN}" in
 h2load)
     # No Connection: close here -- h2load would issue one request per client
     # and then sit idle, reporting a rate of zero.
-    out=$(h2load --h1 -c "${CONNS}" -D "${DURATION}" \
+    out=$(${NSX} h2load --h1 -c "${CONNS}" -D "${DURATION}" \
               "https://${HOST}:${PORT}/" 2>&1) || true
     rate=$(echo "${out}" | awk '/finished in/ { for (i=1;i<=NF;i++) if ($i=="req/s,") print $(i-1) }' | head -1)
     lat=$(echo "${out}" | awk '/time for request:/ { print "min "$4"  mean "$6"  max "$5 }' | head -1)
@@ -193,11 +203,11 @@ h2load)
     ;;
 wrk)
     if [ "${MODE}" = cps ]; then
-        out=$(wrk -t8 -c"${CONNS}" -d"${DURATION}s" --latency \
+        out=$(${NSX} wrk -t8 -c"${CONNS}" -d"${DURATION}s" --latency \
                   -H "Connection: close" \
                   "https://${HOST}:${PORT}/" 2>&1) || true
     else
-        out=$(wrk -t8 -c"${CONNS}" -d"${DURATION}s" --latency \
+        out=$(${NSX} wrk -t8 -c"${CONNS}" -d"${DURATION}s" --latency \
                   "https://${HOST}:${PORT}/" 2>&1) || true
     fi
     rate=$(echo "${out}" | awk '/Requests\/sec/ { print $2 }')

@@ -1,0 +1,51 @@
+# F-Stack over virtio_user with a vhost-net backend: a real DPDK poll-mode
+# driver (shared-memory virtqueues, no syscall per packet) with the kernel on
+# the other side of a tap. Much closer to a physical NIC than af_packet, which
+# still routes every packet through the kernel's packet path.
+#
+# Needs: hugepages, root, and the vhost_net module (modprobe vhost_net).
+# DPDK creates the kernel-side interface named by iface=, so configure that
+# side after starting -- poc_ctl.sh with LINK_MODE=virtio does it.
+#
+# Copy to config.ini and adjust lcore_mask. Do not commit config.ini.
+
+[dpdk]
+lcore_mask=2
+channel=4
+
+# mac= is explicit so the DPDK port and the kernel tap never share an address:
+# FreeBSD's ARP drops any request whose sender MAC matches its own
+# (freebsd/netinet/if_ether.c:899), which is what made net_tap unusable.
+extra_eal_args=--vdev=virtio_user0,path=/dev/vhost-net,queues=1,queue_size=1024,iface=ffvu0,mac=00:16:3e:5a:00:02 --no-pci
+
+# vhost-net negotiates offloads; keep F-Stack from assuming any.
+tx_csum_offoad_skip=1
+
+idle_sleep=0
+pkt_tx_delay=0
+promiscuous=1
+numa_on=1
+port_list=0
+
+[port0]
+addr=10.98.0.2
+netmask=255.255.255.0
+broadcast=10.98.0.255
+gateway=10.98.0.1
+
+[freebsd.boot]
+hz=1000
+fd_reserve=1024
+kern.ipc.maxsockets=262144
+net.inet.tcp.tcbhashsize=65536
+
+[freebsd.sysctl]
+kern.ipc.somaxconn=32768
+kern.ipc.maxsockbuf=16777216
+net.inet.tcp.sendspace=16384
+net.inet.tcp.recvspace=8192
+net.inet.tcp.delayed_ack=0
+net.inet.tcp.sendbuf_auto=1
+net.inet.tcp.recvbuf_auto=1
+net.inet.tcp.fast_finwait2_recycle=1
+net.inet.tcp.msl=2000
