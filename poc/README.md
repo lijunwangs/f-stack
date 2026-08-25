@@ -261,7 +261,8 @@ These are scoped out so the POC stays a POC. None are unknowns.
 - **Single core.** So none of the steering work exists: no symmetric RSS, no
   per-core egress addressing, no flow rules.
 - **No send-side queue.** A short write drops the session instead of buffering
-  and re-arming for writability.
+  and re-arming for writability. Fine for small objects over a veth link;
+  the real implementation needs a per-direction output queue.
 - **Scan has no streaming state**, so a match spanning two buffers is missed.
   The real engine keeps Vectorscan stream state across buffers.
 - **Origin chain is not validated.** Production fails closed on a bad upstream

@@ -271,11 +271,16 @@ static int begin_client_tls(struct session *s)
 
 /* ---- relay ------------------------------------------------------------ */
 
+/*
+ * Move whatever is readable from one leg to the other.
+ * Returns 0 to keep going, 1 when the source has closed cleanly,
+ * -1 on a real error or a scan match.
+ */
 static int relay_one(struct session *s, SSL *from, SSL *to, int to_fd,
                      BIO *to_wbio)
 {
     uint8_t buf[RELAY_BUF_SZ];
-    int n;
+    int n, e;
 
     while ((n = SSL_read(from, buf, sizeof(buf))) > 0) {
         int off = 0;
@@ -291,16 +296,37 @@ static int relay_one(struct session *s, SSL *from, SSL *to, int to_fd,
                 off += w;
                 continue;
             }
-            if (ssl_wants_more(to, w))
-                return -1;      /* POC: no re-drive queue */
-            return -1;
+            return -1;          /* POC: no re-drive queue */
         }
         if (pump_out(to_fd, to_wbio) < 0)
             return -1;
     }
-    if (n == 0 || !ssl_wants_more(from, n))
-        return -1;
-    return 0;
+
+    e = SSL_get_error(from, n);
+    if (n == 0 || e == SSL_ERROR_ZERO_RETURN)
+        return 1;               /* close_notify: an ordinary end of stream */
+    if (e == SSL_ERROR_WANT_READ || e == SSL_ERROR_WANT_WRITE)
+        return 0;
+    return -1;
+}
+
+/*
+ * One side finished, so close the other one properly: emit close_notify and
+ * flush it, or the peer sees a truncated stream. Responses delimited by
+ * connection close -- which is what s_server -www produces -- depend on this.
+ */
+static void finish(struct session *s)
+{
+    if (s->cssl) {
+        SSL_shutdown(s->cssl);
+        pump_out(s->cfd, s->cwbio);
+    }
+    if (s->ossl) {
+        SSL_shutdown(s->ossl);
+        pump_out(s->ofd, s->owbio);
+    }
+    stats.completed++;
+    session_close(s);
 }
 
 /* ---- event entry point ------------------------------------------------ */
@@ -420,23 +446,33 @@ void session_event(struct session *s, int fd, int filter)
     }
 
     case ST_RELAY: {
-        int n;
+        int n, r;
 
         if (is_client) {
             n = pump_in(s->cfd, s->crbio);
-            if (n == 0 || n == -1) {
-                fail(s, "client eof");
+            if (n == -1) {
+                fail(s, "client read error");
                 return;
             }
-            if (relay_one(s, s->cssl, s->ossl, s->ofd, s->owbio) < 0)
+            r = relay_one(s, s->cssl, s->ossl, s->ofd, s->owbio);
+            if (n == 0)
+                r = 1;          /* socket closed under us */
+            if (r > 0)
+                finish(s);
+            else if (r < 0)
                 fail(s, "relay to origin");
         } else {
             n = pump_in(s->ofd, s->orbio);
-            if (n == 0 || n == -1) {
-                fail(s, "origin eof");
+            if (n == -1) {
+                fail(s, "origin read error");
                 return;
             }
-            if (relay_one(s, s->ossl, s->cssl, s->cfd, s->cwbio) < 0)
+            r = relay_one(s, s->ossl, s->cssl, s->cfd, s->cwbio);
+            if (n == 0)
+                r = 1;
+            if (r > 0)
+                finish(s);
+            else if (r < 0)
                 fail(s, "relay to client");
         }
         return;

@@ -73,10 +73,11 @@ static void print_stats(void)
 
     forge_stats(&hits, &mints);
     scan_stats(&sbytes, &shits);
-    printf("[poc] sessions=%lu ohs=%lu chs=%lu failed=%lu blocked=%lu "
+    printf("[poc] sessions=%lu ohs=%lu chs=%lu done=%lu failed=%lu blocked=%lu "
            "rx=%luKB tx=%luKB certs=%lu/%lu scanned=%luKB matches=%lu\n",
            s->sessions, s->origin_handshakes, s->client_handshakes,
-           s->failed, s->blocked, s->rx_bytes / 1024, s->tx_bytes / 1024,
+           s->completed, s->failed, s->blocked,
+           s->rx_bytes / 1024, s->tx_bytes / 1024,
            mints, hits, sbytes / 1024, shits);
     fflush(stdout);
 }

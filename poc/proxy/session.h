@@ -33,6 +33,7 @@ struct poc_stats {
     unsigned long sessions;
     unsigned long origin_handshakes;
     unsigned long client_handshakes;
+    unsigned long completed;
     unsigned long failed;
     unsigned long blocked;
     unsigned long rx_bytes;
