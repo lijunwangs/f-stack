@@ -15,6 +15,52 @@ sessions, everything inspected.
 | `proxy/` | DPDK + libfstack | The vertical slice: intercept, forge, inspect, relay |
 | `proxy/host_test.c` | OpenSSL only | Tests the SNI parser and certificate factory |
 
+## Building
+
+Three layers: DPDK, then `libfstack`, then the POC. Only the last one is ours.
+
+```sh
+# 1. dependencies (Ubuntu)
+sudo apt update
+sudo apt install -y git gcc make meson ninja-build python3-pyelftools \
+                    libssl-dev libnuma-dev pkg-config
+
+# 2. DPDK
+cd $FF_PATH/dpdk
+meson setup -Denable_kmods=false build
+ninja -C build
+sudo ninja -C build install
+sudo ldconfig
+
+# 3. point pkg-config at it, and confirm
+export PKG_CONFIG_PATH=/usr/local/lib/x86_64-linux-gnu/pkgconfig:/usr/local/lib64/pkgconfig:$PKG_CONFIG_PATH
+pkg-config --modversion libdpdk        # expect 24.11.x
+
+# 4. the F-Stack library (slow: it builds the FreeBSD sources)
+export FF_PATH=$(pwd)/../..            # or wherever the repo lives
+cd $FF_PATH/lib
+make -j$(nproc)
+
+# 5. the POC
+cd $FF_PATH/poc/proxy
+make
+```
+
+**`-Denable_kmods=false` is deliberate.** The repo's build guide uses `true`,
+which builds the `igb_uio` and `kni` kernel modules. They are not needed here:
+the single-box setup runs with `--no-pci` and a TAP device, so no interface is
+ever bound to a userspace driver. On a recent kernel those modules are also
+liable to fail to build, taking the whole DPDK build down with them.
+
+If step 3 cannot find `libdpdk`, locate the file and set the path to its
+directory:
+
+```sh
+find / -name libdpdk.pc 2>/dev/null
+```
+
+The bench and the host tests need none of this — only `libssl-dev`.
+
 ## M0a — bench the budget
 
 Runs anywhere, no DPDK, no NIC, no root. Run it on the target hardware and the
