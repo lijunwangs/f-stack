@@ -22,7 +22,13 @@ KERNEL_IP=${KERNEL_IP:-10.99.0.1}
 VIRTIO_IF=${VIRTIO_IF:-ffvu0}
 VIRTIO_KERNEL_IP=${VIRTIO_KERNEL_IP:-10.98.0.1}
 
-POC_ORIGIN=${POC_ORIGIN:-10.99.0.1:9443}
+# The origin lives on the kernel side of whichever link is in use, so the
+# default has to follow LINK_MODE or the proxy dials the wrong network.
+if [ "${LINK_MODE}" = virtio ]; then
+    POC_ORIGIN=${POC_ORIGIN:-${VIRTIO_KERNEL_IP}:9443}
+else
+    POC_ORIGIN=${POC_ORIGIN:-${KERNEL_IP}:9443}
+fi
 POC_LISTEN_PORT=${POC_LISTEN_PORT:-8443}
 POC_PATTERN=${POC_PATTERN:-SECRET-CANARY}
 export POC_ORIGIN POC_LISTEN_PORT POC_PATTERN
