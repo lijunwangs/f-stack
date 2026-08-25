@@ -19,7 +19,8 @@ ifndef TOPDIR
 $(error TOPDIR must be defined.)
 endif
 
-FF_LIB_CFLAGS:= -g -Wall -Werror -DFSTACK -std=gnu99
+FF_WERROR?= -Werror
+FF_LIB_CFLAGS:= -g -Wall ${FF_WERROR} -DFSTACK -std=gnu99
 FF_LIB_CFLAGS+= -I${TOPDIR}/lib -I${TOPDIR}/tools/compat
 FF_LIB_CFLAGS+= -include${TOPDIR}/tools/compat/compat.h
 FF_LIB_CFLAGS+= -I${TOPDIR}/tools/compat/include -D__BSD_VISIBLE

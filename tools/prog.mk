@@ -46,7 +46,8 @@ OBJS+= $(patsubst %.cc,%.o, $(filter %.cc,${SRCS}))
 
 PKGCONF ?= pkg-config
 
-FF_PROG_CFLAGS:= -g -Wall -Werror -DFSTACK -std=gnu99 $(shell $(PKGCONF) --cflags libdpdk)
+FF_WERROR?= -Werror
+FF_PROG_CFLAGS:= -g -Wall ${FF_WERROR} -DFSTACK -std=gnu99 $(shell $(PKGCONF) --cflags libdpdk)
 FF_PROG_CFLAGS+= -I${TOPDIR}/lib -I${TOPDIR}/tools/compat
 FF_PROG_CFLAGS+= -include${TOPDIR}/tools/compat/compat.h
 FF_PROG_CFLAGS+= -I${TOPDIR}/tools/compat/include -D__BSD_VISIBLE
