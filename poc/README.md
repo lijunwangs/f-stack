@@ -50,12 +50,22 @@ first: the unprivileged build cannot overwrite them.
 If both builds pass the same three checks, the abstraction is sound and any
 later performance difference between them is attributable to the transport.
 
-The kernel build earned its keep immediately by exposing a real bug: entering
-the relay state without draining what was already buffered. On loopback a
+The kernel build has now exposed two real bugs, both latent on F-Stack.
+
+**SIGPIPE.** A proxy writes into sockets the peer may have just closed, which
+is routine under connection churn. On the kernel stack that raises SIGPIPE and
+the default action kills the process -- silently, no log line, no core, nothing
+in `dmesg`. The symptom was a healthy run to 131,797 sessions and then simple
+absence. F-Stack never signals the process, so only the kernel build died.
+
+**Entering the relay state without draining what was already buffered.** On loopback a
 client's Finished and its first request arrive in the same segment, so one read
 pulls both into the BIO -- and with edge-triggered readiness on either stack, no
 further event ever comes and the session hangs. F-Stack had been getting lucky
 on segment timing.
+
+Neither bug was findable on F-Stack alone. That is the return on the platform
+layer, independent of any benchmark it enables.
 
 This exists to make a comparison against a stock proxy interpretable. Measuring
 the POC against Envoy directly conflates three variables: userspace TCP versus

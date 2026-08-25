@@ -12,6 +12,7 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <signal.h>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -187,6 +188,16 @@ int main(int argc, char *argv[])
     }
     port = env_int("POC_LISTEN_PORT", 8443);
     stats_interval = env_int("POC_STATS_SEC", 5);
+
+    /*
+     * A proxy writes into sockets the peer may have just closed, which is
+     * routine under connection churn. On the kernel stack that raises
+     * SIGPIPE and the default action kills the process -- silently, with no
+     * log line and no core. EPIPE from write() is what we want instead.
+     * F-Stack never signals the process, so only the kernel build is
+     * affected, which is how this went unnoticed.
+     */
+    signal(SIGPIPE, SIG_IGN);
 
     if (scan_init(pattern && *pattern ? pattern : "SECRET-CANARY") != 0) {
         fprintf(stderr, "scan_init failed\n");
