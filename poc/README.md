@@ -187,11 +187,19 @@ starts first and the kernel side is configured afterwards.
 ```sh
 cp config.ini.sample config.ini        # then set lcore_mask
 
-# shell 1 -- the gateway. Creates ffm0.
-sudo POC_ORIGIN=10.99.0.1:9443 ./poc_proxy --conf config.ini --proc-type=primary
+sudo ./poc_ctl.sh start                # background; creates ffm0
+sudo ./test_single_box.sh              # configures the TAP, origin, checks
+sudo ./poc_ctl.sh status               # pid, TAP state, last stats line
+sudo ./poc_ctl.sh log                  # follow poc_proxy.log
+sudo ./poc_ctl.sh stop
+```
 
-# shell 2 -- configures the TAP, starts an origin, runs the checks
-sudo ./test_single_box.sh
+`poc_ctl.sh start` clears `/var/run/dpdk/rte` first, because an unclean exit
+leaves DPDK runtime state that makes the next EAL init fail on a stale socket.
+To run it in the foreground instead, which is easier when something is wrong:
+
+```sh
+sudo POC_ORIGIN=10.99.0.1:9443 ./poc_proxy --conf config.ini --proc-type=primary
 ```
 
 `test_single_box.sh` verifies three things: that a request completes through

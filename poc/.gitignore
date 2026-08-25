@@ -1,7 +1,9 @@
-poc_proxy
-host_test
-poc_ca.pem
 *.dSYM/
-tls_bench
-origin_key.pem
+host_test
 origin_crt.pem
+origin_key.pem
+poc_ca.pem
+poc_proxy
+poc_proxy.log
+poc_proxy.pid
+tls_bench
