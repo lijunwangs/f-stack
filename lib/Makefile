@@ -130,10 +130,11 @@ endif
 GCCVERGE11 = $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 11)
 ifeq "$(GCCVERGE11)" "1"
     CFLAGS+= -Wno-error=stringop-overread
-endif
-
-GCCVERGE12 = $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 12)
-ifeq "$(GCCVERGE12)" "1"
+    # GCC 11 already misreads FreeBSD's tagged-union punning in
+    # kern/sys_generic.c (sys___specialfd), not just GCC 12: a
+    # specialfd_inotify is read through a specialfd_eventfd pointer after a
+    # type check the analyser cannot follow. Ubuntu 22.04 ships GCC 11.4, so
+    # gating this at 12 breaks the build on a very common environment.
     CFLAGS+= -Wno-error=array-bounds
 endif
 
