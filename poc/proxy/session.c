@@ -103,10 +103,14 @@ void session_close(struct session *s)
 
 static void fail(struct session *s, const char *why)
 {
+    /* errno is worth printing: the stacks disagree about which failures are
+     * transient, and the name of the one that fired is the whole diagnosis. */
+    int e = errno;
+
     stats.failed++;
     if (stats.failed <= 20)
-        fprintf(stderr, "[poc] session failed in %s: %s\n",
-                st_name[s->state], why);
+        fprintf(stderr, "[poc] session failed in %s: %s (errno %d: %s)\n",
+                st_name[s->state], why, e, strerror(e));
     session_close(s);
 }
 
@@ -135,7 +139,16 @@ static int flush_q(int fd, struct outq *q)
             stats.tx_bytes += (unsigned long)w;
             continue;
         }
-        if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+        if (w < 0 && errno == EINTR)
+            continue;
+        /*
+         * ENOBUFS belongs here with EAGAIN. The FreeBSD stack raises it when
+         * mbufs are momentarily short, which is backpressure and clears on
+         * its own; treating it as fatal killed sessions mid-transfer under
+         * load, and the client simply reconnected and hit it again.
+         */
+        if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK ||
+                      errno == ENOBUFS))
             return 1;
         return -1;
     }
