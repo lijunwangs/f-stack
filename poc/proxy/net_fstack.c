@@ -78,22 +78,17 @@ int ev_set(int ev, int fd, int events)
         ff_kevent(ev, &ch, 1, NULL, 0, NULL);
     }
     /*
-     * Edge-triggered (EV_CLEAR). This stack polls rather than sleeps, so the
-     * loop spins: level-triggered readiness re-reports every fd that still
-     * holds data on every single spin, and the loop then re-walks the same
-     * sessions millions of times for one transfer. A profile of the level-
-     * triggered version spent its core on kevent bookkeeping and clock reads
-     * with packet receive down in the noise. Continuation does not need
-     * re-reporting anyway: a relay that stops on its work budget puts itself
-     * on the resume queue.
+     * Level-triggered on purpose: no EV_CLEAR. The relay hands control back
+     * to the stack before a large transfer is finished, so readiness has to
+     * be re-reported rather than announced once.
      */
     if (events & NET_EV_READ) {
-        EV_SET(&ch, fd, EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, NULL);
+        EV_SET(&ch, fd, EVFILT_READ, EV_ADD, 0, 0, NULL);
         if (ff_kevent(ev, &ch, 1, NULL, 0, NULL) < 0)
             return -1;
     }
     if (events & NET_EV_WRITE) {
-        EV_SET(&ch, fd, EVFILT_WRITE, EV_ADD | EV_CLEAR, 0, 0, NULL);
+        EV_SET(&ch, fd, EVFILT_WRITE, EV_ADD, 0, 0, NULL);
         if (ff_kevent(ev, &ch, 1, NULL, 0, NULL) < 0)
             return -1;
     }
