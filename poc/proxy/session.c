@@ -64,10 +64,11 @@ struct session *session_new(int kq, int cfd, const struct sockaddr_in *origin)
 
     net_set_nonblock(cfd);
     by_fd[cfd] = s;
-    if (ev_watch(kq, cfd, NET_EV_READ, 1) < 0) {
+    if (ev_set(kq, cfd, NET_EV_READ) < 0) {
         session_close(s);
         return NULL;
     }
+    s->cmask = NET_EV_READ;
     stats.sessions++;
     return s;
 }
@@ -111,33 +112,71 @@ static void fail(struct session *s, const char *why)
 
 /* ---- BIO pumping ------------------------------------------------------ */
 
-/* Drain everything the SSL object wants to send onto the socket. */
-static int pump_out(int fd, BIO *wbio)
+/* Keep an fd's registered interest in step with whether output is pending. */
+static void want_write(struct session *s, int fd, int on)
 {
-    char buf[RELAY_BUF_SZ];
-    int n;
+    int *mask = (fd == s->cfd) ? &s->cmask : &s->omask;
+    int want = NET_EV_READ | (on ? NET_EV_WRITE : 0);
 
-    while ((n = BIO_read(wbio, buf, sizeof(buf))) > 0) {
-        ssize_t off = 0;
+    if (*mask == want)
+        return;
+    if (ev_set(s->kq, fd, want) == 0)
+        *mask = want;
+}
 
-        while (off < n) {
-            ssize_t w = net_write(fd, buf + off, (size_t)(n - off));
+/* Push the queued chunk out. 0 = emptied, 1 = socket full, -1 = error. */
+static int flush_q(int fd, struct outq *q)
+{
+    while (q->off < q->len) {
+        ssize_t w = net_write(fd, q->buf + q->off, q->len - q->off);
 
-            if (w > 0) {
-                off += w;
-                stats.tx_bytes += (unsigned long)w;
-                continue;
-            }
-            if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-                /*
-                 * POC limitation: no send-side queue. A real implementation
-                 * buffers the remainder and re-arms EVFILT_WRITE.
-                 */
-                return -1;
-            }
-            return -1;
+        if (w > 0) {
+            q->off += (size_t)w;
+            stats.tx_bytes += (unsigned long)w;
+            continue;
         }
+        if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+            return 1;
+        return -1;
     }
+    q->len = q->off = 0;
+    return 0;
+}
+
+/*
+ * Drain everything the SSL object wants to send onto the socket, staging it
+ * through the leg's queue so a short write costs no data.
+ * 0 = nothing left to send, 1 = socket full and a chunk is still queued,
+ * -1 = error. A full socket is backpressure, not a failure: callers stop
+ * feeding this leg and the write event brings them back.
+ */
+static int pump_out(struct session *s, int fd, BIO *wbio, struct outq *q)
+{
+    int rc = flush_q(fd, q);
+
+    while (rc == 0) {
+        int n = BIO_read(wbio, q->buf, sizeof(q->buf));
+
+        if (n <= 0)
+            break;              /* memory BIO drained */
+        q->len = (size_t)n;
+        q->off = 0;
+        rc = flush_q(fd, q);
+    }
+    if (rc >= 0)
+        want_write(s, fd, rc == 1);
+    return rc;
+}
+
+/* Anything still owed to either peer? */
+static int out_pending(struct session *s)
+{
+    if (s->cq.off < s->cq.len || s->oq.off < s->oq.len)
+        return 1;
+    if (s->cwbio && BIO_pending(s->cwbio) > 0)
+        return 1;
+    if (s->owbio && BIO_pending(s->owbio) > 0)
+        return 1;
     return 0;
 }
 
@@ -186,8 +225,9 @@ static int start_origin(struct session *s)
     if (rc < 0 && errno != EINPROGRESS)
         return -1;
 
-    if (ev_watch(s->kq, fd, NET_EV_WRITE, 1) < 0)
+    if (ev_set(s->kq, fd, NET_EV_WRITE) < 0)
         return -1;
+    s->omask = NET_EV_WRITE;
     s->state = ST_OCONNECT;
     return 0;
 }
@@ -218,8 +258,9 @@ static int begin_origin_tls(struct session *s)
     SSL_set_tlsext_host_name(s->ossl, s->sni);
     SSL_set_connect_state(s->ossl);
 
-    if (ev_watch(s->kq, s->ofd, NET_EV_READ, 1) < 0)
+    if (ev_set(s->kq, s->ofd, NET_EV_READ) < 0)
         return -1;
+    s->omask = NET_EV_READ;
     s->state = ST_OHS;
     return 0;
 }
@@ -263,13 +304,22 @@ static int begin_client_tls(struct session *s)
  * -2 when the scan matched, -1 on a real error.
  */
 static int relay_one(struct session *s, SSL *from, SSL *to, int to_fd,
-                     BIO *to_wbio)
+                     BIO *to_wbio, struct outq *to_q)
 {
     uint8_t buf[RELAY_BUF_SZ];
     int n, e;
 
+    /*
+     * Don't pull more plaintext while the far socket is congested. SSL_write
+     * into a memory BIO always succeeds, so reading on would grow that BIO
+     * without bound instead of pushing back on the source.
+     */
+    if (to_q->off < to_q->len)
+        return 0;
+
     while ((n = SSL_read(from, buf, sizeof(buf))) > 0) {
         int off = 0;
+        int rc;
 
         if (scan_buf(buf, (size_t)n))
             return -2;          /* POC: drop the session on a match */
@@ -280,10 +330,13 @@ static int relay_one(struct session *s, SSL *from, SSL *to, int to_fd,
                 off += w;
                 continue;
             }
-            return -1;          /* POC: no re-drive queue */
+            return -1;          /* memory BIO: only a real error lands here */
         }
-        if (pump_out(to_fd, to_wbio) < 0)
+        rc = pump_out(s, to_fd, to_wbio, to_q);
+        if (rc < 0)
             return -1;
+        if (rc == 1)
+            return 0;           /* congested; the write event resumes us */
     }
 
     e = SSL_get_error(from, n);
@@ -312,11 +365,21 @@ static void finish(struct session *s)
 {
     if (s->cssl) {
         SSL_shutdown(s->cssl);
-        pump_out(s->cfd, s->cwbio);
+        pump_out(s, s->cfd, s->cwbio, &s->cq);
     }
-    if (s->ossl) {
+    if (s->ossl && s->ofd >= 0) {
         SSL_shutdown(s->ossl);
-        pump_out(s->ofd, s->owbio);
+        pump_out(s, s->ofd, s->owbio, &s->oq);
+    }
+    /*
+     * Closing now would truncate whatever is still queued -- exactly what a
+     * large response hits, since the tail is usually still in flight when the
+     * source reports end of stream. Stay alive on write interest instead and
+     * complete the close once the queues empty.
+     */
+    if (out_pending(s)) {
+        s->closing = 1;
+        return;
     }
     stats.completed++;
     session_close(s);
@@ -334,12 +397,29 @@ static void relay_pump(struct session *s)
 {
     int n, r;
 
+    /* A write event may have unblocked either leg; drain before reading on. */
+    if (pump_out(s, s->cfd, s->cwbio, &s->cq) < 0) {
+        fail(s, "client write");
+        return;
+    }
+    if (s->ofd >= 0 && pump_out(s, s->ofd, s->owbio, &s->oq) < 0) {
+        fail(s, "origin write");
+        return;
+    }
+    if (s->closing) {
+        if (!out_pending(s)) {
+            stats.completed++;
+            session_close(s);
+        }
+        return;
+    }
+
     n = pump_in(s->cfd, s->crbio);
     if (n == -1) {
         fail(s, "client read error");
         return;
     }
-    r = relay_one(s, s->cssl, s->ossl, s->ofd, s->owbio);
+    r = relay_one(s, s->cssl, s->ossl, s->ofd, s->owbio, &s->oq);
     if (n == 0 && r == 0)
         r = 1;
     if (r == -2) {
@@ -360,7 +440,7 @@ static void relay_pump(struct session *s)
         fail(s, "origin read error");
         return;
     }
-    r = relay_one(s, s->ossl, s->cssl, s->cfd, s->cwbio);
+    r = relay_one(s, s->ossl, s->cssl, s->cfd, s->cwbio, &s->cq);
     if (n == 0 && r == 0)
         r = 1;
     if (r == -2)
@@ -411,7 +491,7 @@ void session_event(struct session *s, int fd, int filter)
             fail(s, "origin unreachable");
             return;
         }
-        ev_watch(s->kq, s->ofd, NET_EV_WRITE, 0);
+        /* begin_origin_tls sets the origin leg's interest to read only. */
         if (begin_origin_tls(s) < 0) {
             fail(s, "origin tls setup");
             return;
@@ -432,7 +512,7 @@ void session_event(struct session *s, int fd, int filter)
             }
         }
         rc = SSL_do_handshake(s->ossl);
-        if (pump_out(s->ofd, s->owbio) < 0) {
+        if (pump_out(s, s->ofd, s->owbio, &s->oq) < 0) {
             fail(s, "origin write");
             return;
         }
@@ -444,7 +524,7 @@ void session_event(struct session *s, int fd, int filter)
             }
             /* Drive the client handshake with the replayed ClientHello. */
             rc = SSL_do_handshake(s->cssl);
-            if (pump_out(s->cfd, s->cwbio) < 0) {
+            if (pump_out(s, s->cfd, s->cwbio, &s->cq) < 0) {
                 fail(s, "client write");
                 return;
             }
@@ -474,7 +554,7 @@ void session_event(struct session *s, int fd, int filter)
             }
         }
         rc = SSL_do_handshake(s->cssl);
-        if (pump_out(s->cfd, s->cwbio) < 0) {
+        if (pump_out(s, s->cfd, s->cwbio, &s->cq) < 0) {
             fail(s, "client write");
             return;
         }

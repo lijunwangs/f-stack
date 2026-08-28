@@ -49,6 +49,13 @@ int net_set_nonblock(int fd);
 /* Event loop. ev_watch(add=0) removes the interest. */
 int ev_create(void);
 int ev_watch(int ev, int fd, int events, int add);
+/*
+ * Set an fd's interest to exactly `events`, adding and removing filters as
+ * needed. ev_watch cannot express this portably: kqueue tracks one filter per
+ * call, while epoll replaces the whole mask and treats add=0 as "forget the
+ * fd". Arming write interest without losing read interest needs this.
+ */
+int ev_set(int ev, int fd, int events);
 int ev_wait(int ev, struct net_event *out, int max);
 
 #endif /* POC_NET_H */

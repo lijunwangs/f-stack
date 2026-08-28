@@ -80,6 +80,26 @@ int ev_create(void) { return epoll_create1(0); }
  * registration per fd rather than one per direction, so a watch has to carry
  * the whole desired mask and ADD or MOD as appropriate.
  */
+int ev_set(int ev, int fd, int events)
+{
+    struct epoll_event e;
+
+    memset(&e, 0, sizeof(e));
+    e.data.fd = fd;
+    if (events & NET_EV_READ)
+        e.events |= EPOLLIN;
+    if (events & NET_EV_WRITE)
+        e.events |= EPOLLOUT;
+    e.events |= EPOLLET;
+
+    /* MOD first: the fd is already registered on every path but the first. */
+    if (epoll_ctl(ev, EPOLL_CTL_MOD, fd, &e) == 0)
+        return 0;
+    if (errno != ENOENT)
+        return -1;
+    return epoll_ctl(ev, EPOLL_CTL_ADD, fd, &e);
+}
+
 int ev_watch(int ev, int fd, int events, int add)
 {
     struct epoll_event e;

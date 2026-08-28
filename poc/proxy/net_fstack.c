@@ -59,6 +59,37 @@ int net_set_nonblock(int fd)
 
 int ev_create(void) { return ff_kqueue(); }
 
+int ev_set(int ev, int fd, int events)
+{
+    struct kevent ch;
+
+    /*
+     * Deletes go first and their result is ignored: EV_DELETE of a filter
+     * that was never added returns ENOENT, which is the normal case here.
+     * One kevent call per change, because with an empty eventlist a failing
+     * change aborts the rest of the batch.
+     */
+    if (!(events & NET_EV_READ)) {
+        EV_SET(&ch, fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
+        ff_kevent(ev, &ch, 1, NULL, 0, NULL);
+    }
+    if (!(events & NET_EV_WRITE)) {
+        EV_SET(&ch, fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
+        ff_kevent(ev, &ch, 1, NULL, 0, NULL);
+    }
+    if (events & NET_EV_READ) {
+        EV_SET(&ch, fd, EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, NULL);
+        if (ff_kevent(ev, &ch, 1, NULL, 0, NULL) < 0)
+            return -1;
+    }
+    if (events & NET_EV_WRITE) {
+        EV_SET(&ch, fd, EVFILT_WRITE, EV_ADD | EV_CLEAR, 0, 0, NULL);
+        if (ff_kevent(ev, &ch, 1, NULL, 0, NULL) < 0)
+            return -1;
+    }
+    return 0;
+}
+
 int ev_watch(int ev, int fd, int events, int add)
 {
     struct kevent ch[2];
