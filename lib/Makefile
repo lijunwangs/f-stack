@@ -698,13 +698,22 @@ libfstack.a: machine_includes ff_api.symlist ${MHEADERS} ${MSRCS} ${HOST_OBJS} $
 	ar -cqs $@ $*.ro ${HOST_OBJS}
 	rm -f $*.ro
 
-${HOST_OBJS}: %.o: %.c
+#
+# Order-only dependency on machine_includes. That target begins with
+# "rm -rf ${MACHINE_INCLUDES_ROOT}", so under make -j it can delete and
+# re-copy the machine headers while these objects are compiling against
+# them -- the build then fails with "x86/endian.h: No such file or
+# directory" at whichever file lost the race. Listing machine_includes as
+# a prerequisite of libfstack.a alone does not order it before the objects.
+# Order-only (|) keeps the phony target from forcing needless rebuilds.
+#
+${HOST_OBJS}: %.o: %.c | machine_includes
 	${HOST_C}
 
-${ASM_OBJS}: %.o: %.S ${IMACROS_FILE}
+${ASM_OBJS}: %.o: %.S ${IMACROS_FILE} | machine_includes
 	${NORMAL_S}
 
-${OBJS}: %.o: %.c ${IMACROS_FILE}
+${OBJS}: %.o: %.c ${IMACROS_FILE} | machine_includes
 	${NORMAL_C}
 
 
