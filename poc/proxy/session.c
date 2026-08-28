@@ -199,6 +199,25 @@ static int pump_in(int fd, BIO *rbio)
     return -1;
 }
 
+/*
+ * Drain the socket into the SSL object's read BIO. Readiness is edge-
+ * triggered, so stopping at the first read can strand bytes that already
+ * arrived -- a handshake message split across segments would then wait for an
+ * edge that never comes. Returns 1 normally, 0 on peer close, -1 on error.
+ */
+static int fill_in(int fd, BIO *rbio)
+{
+    for (;;) {
+        int n = pump_in(fd, rbio);
+
+        if (n > 0)
+            continue;
+        if (n == -2)
+            return 1;           /* socket drained */
+        return n == 0 ? 0 : -1;
+    }
+}
+
 static int ssl_wants_more(SSL *ssl, int rc)
 {
     int e = SSL_get_error(ssl, rc);
@@ -299,52 +318,66 @@ static int begin_client_tls(struct session *s)
 /* ---- relay ------------------------------------------------------------ */
 
 /*
- * Move whatever is readable from one leg to the other.
- * Returns 0 to keep going, 1 when the source has closed cleanly,
- * -2 when the scan matched, -1 on a real error.
+ * Move everything available from one leg to the other, refilling the source
+ * socket as the SSL object runs dry. The refill has to happen here: readiness
+ * is edge-triggered on both stacks, so a single read per event leaves the
+ * rest of a large transfer sitting in the socket with no further edge coming,
+ * and the session then creeps along on whatever unrelated events show up.
+ *
+ * Returns 0 to keep going, 1 when the source has ended, -2 when the scan
+ * matched, -1 on a real error.
  */
-static int relay_one(struct session *s, SSL *from, SSL *to, int to_fd,
-                     BIO *to_wbio, struct outq *to_q)
+static int relay_one(struct session *s, SSL *from, int from_fd, BIO *from_rbio,
+                     SSL *to, int to_fd, BIO *to_wbio, struct outq *to_q)
 {
     uint8_t buf[RELAY_BUF_SZ];
-    int n, e;
 
-    /*
-     * Don't pull more plaintext while the far socket is congested. SSL_write
-     * into a memory BIO always succeeds, so reading on would grow that BIO
-     * without bound instead of pushing back on the source.
-     */
-    if (to_q->off < to_q->len)
-        return 0;
+    for (;;) {
+        int n, e, rc, off = 0;
 
-    while ((n = SSL_read(from, buf, sizeof(buf))) > 0) {
-        int off = 0;
-        int rc;
+        /*
+         * Don't pull more plaintext while the far socket is congested.
+         * SSL_write into a memory BIO always succeeds, so reading on would
+         * grow that BIO without bound instead of pushing back on the source.
+         */
+        if (to_q->off < to_q->len)
+            return 0;
 
-        if (scan_buf(buf, (size_t)n))
-            return -2;          /* POC: drop the session on a match */
-        while (off < n) {
-            int w = SSL_write(to, buf + off, n - off);
+        n = SSL_read(from, buf, sizeof(buf));
+        if (n > 0) {
+            if (scan_buf(buf, (size_t)n))
+                return -2;      /* POC: drop the session on a match */
+            while (off < n) {
+                int w = SSL_write(to, buf + off, n - off);
 
-            if (w > 0) {
+                if (w <= 0)
+                    return -1;  /* memory BIO: only a real error lands here */
                 off += w;
-                continue;
             }
-            return -1;          /* memory BIO: only a real error lands here */
+            rc = pump_out(s, to_fd, to_wbio, to_q);
+            if (rc < 0)
+                return -1;
+            if (rc == 1)
+                return 0;       /* congested; the write event resumes us */
+            continue;
         }
-        rc = pump_out(s, to_fd, to_wbio, to_q);
-        if (rc < 0)
-            return -1;
-        if (rc == 1)
-            return 0;           /* congested; the write event resumes us */
-    }
 
-    e = SSL_get_error(from, n);
-    if (n == 0 || e == SSL_ERROR_ZERO_RETURN)
-        return 1;               /* close_notify: an ordinary end of stream */
-    if (e == SSL_ERROR_WANT_READ || e == SSL_ERROR_WANT_WRITE)
-        return 0;
-    return -1;
+        e = SSL_get_error(from, n);
+        if (n == 0 || e == SSL_ERROR_ZERO_RETURN)
+            return 1;           /* close_notify: an ordinary end of stream */
+        if (e != SSL_ERROR_WANT_READ && e != SSL_ERROR_WANT_WRITE)
+            return -1;
+
+        /* The record layer wants more bytes: top it up from the socket. */
+        n = pump_in(from_fd, from_rbio);
+        if (n > 0)
+            continue;
+        if (n == 0)
+            return 1;           /* peer closed without close_notify */
+        if (n == -2)
+            return 0;           /* socket drained */
+        return -1;
+    }
 }
 
 /*
@@ -395,7 +428,7 @@ static void finish(struct session *s)
  */
 static void relay_pump(struct session *s)
 {
-    int n, r;
+    int r;
 
     /* A write event may have unblocked either leg; drain before reading on. */
     if (pump_out(s, s->cfd, s->cwbio, &s->cq) < 0) {
@@ -414,14 +447,8 @@ static void relay_pump(struct session *s)
         return;
     }
 
-    n = pump_in(s->cfd, s->crbio);
-    if (n == -1) {
-        fail(s, "client read error");
-        return;
-    }
-    r = relay_one(s, s->cssl, s->ossl, s->ofd, s->owbio, &s->oq);
-    if (n == 0 && r == 0)
-        r = 1;
+    r = relay_one(s, s->cssl, s->cfd, s->crbio,
+                  s->ossl, s->ofd, s->owbio, &s->oq);
     if (r == -2) {
         blocked(s);
         return;
@@ -435,14 +462,8 @@ static void relay_pump(struct session *s)
         return;
     }
 
-    n = pump_in(s->ofd, s->orbio);
-    if (n == -1) {
-        fail(s, "origin read error");
-        return;
-    }
-    r = relay_one(s, s->ossl, s->cssl, s->cfd, s->cwbio, &s->cq);
-    if (n == 0 && r == 0)
-        r = 1;
+    r = relay_one(s, s->ossl, s->ofd, s->orbio,
+                  s->cssl, s->cfd, s->cwbio, &s->cq);
     if (r == -2)
         blocked(s);
     else if (r < 0)
@@ -503,13 +524,9 @@ void session_event(struct session *s, int fd, int filter)
     case ST_OHS: {
         int rc;
 
-        if (!is_client) {
-            int n = pump_in(s->ofd, s->orbio);
-
-            if (n == 0 || n == -1) {
-                fail(s, "origin closed during handshake");
-                return;
-            }
+        if (!is_client && fill_in(s->ofd, s->orbio) <= 0) {
+            fail(s, "origin closed during handshake");
+            return;
         }
         rc = SSL_do_handshake(s->ossl);
         if (pump_out(s, s->ofd, s->owbio, &s->oq) < 0) {
@@ -545,13 +562,9 @@ void session_event(struct session *s, int fd, int filter)
     case ST_CHS: {
         int rc;
 
-        if (is_client) {
-            int n = pump_in(s->cfd, s->crbio);
-
-            if (n == 0 || n == -1) {
-                fail(s, "client closed during handshake");
-                return;
-            }
+        if (is_client && fill_in(s->cfd, s->crbio) <= 0) {
+            fail(s, "client closed during handshake");
+            return;
         }
         rc = SSL_do_handshake(s->cssl);
         if (pump_out(s, s->cfd, s->cwbio, &s->cq) < 0) {
