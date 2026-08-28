@@ -125,11 +125,12 @@ static void fail(struct session *s, const char *why)
 /* ---- BIO pumping ------------------------------------------------------ */
 
 /*
- * Recompute what each leg should be woken for. Readiness is level-triggered,
- * so anything left unread is re-reported every iteration: a leg whose peer
- * cannot take more must stop asking to read, or the loop spins at full speed
- * getting told about data it is not allowed to move yet. Watching a leg whose
- * SSL object does not exist yet would spin the same way, hence the states.
+ * Recompute what each leg should be woken for. A leg whose peer cannot take
+ * more stops asking to read: there is no point being handed data we may not
+ * forward, and leaving it unread is what applies backpressure to the sender.
+ * Re-arming a leg reports data that arrived while it was disarmed, on both
+ * backends, so nothing is stranded by muting it. The states keep us from
+ * watching a leg whose SSL object does not exist yet.
  */
 static void update_interest(struct session *s)
 {

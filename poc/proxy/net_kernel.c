@@ -90,7 +90,7 @@ int ev_set(int ev, int fd, int events)
         e.events |= EPOLLIN;
     if (events & NET_EV_WRITE)
         e.events |= EPOLLOUT;
-    /* Level-triggered on purpose: see the note in net_fstack.c. */
+    e.events |= EPOLLET;    /* edge-triggered: see the note in net_fstack.c */
 
     /* MOD first: the fd is already registered on every path but the first. */
     if (epoll_ctl(ev, EPOLL_CTL_MOD, fd, &e) == 0)
