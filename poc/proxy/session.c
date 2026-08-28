@@ -184,9 +184,14 @@ static int flush_q(int fd, struct outq *q)
          * its own; treating it as fatal killed sessions mid-transfer under
          * load, and the client simply reconnected and hit it again.
          */
-        if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK ||
-                      errno == ENOBUFS))
+        if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            stats.tx_block++;
             return 1;
+        }
+        if (w < 0 && errno == ENOBUFS) {
+            stats.tx_nobufs++;
+            return 1;
+        }
         return -1;
     }
     q->len = q->off = 0;

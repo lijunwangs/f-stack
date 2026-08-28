@@ -56,6 +56,8 @@ struct poc_stats {
     unsigned long blocked;
     unsigned long rx_bytes;
     unsigned long tx_bytes;
+    unsigned long tx_block;     /* writes deferred: socket full */
+    unsigned long tx_nobufs;    /* writes deferred: stack out of mbufs */
 };
 
 struct session *session_new(int kq, int cfd, const struct sockaddr_in *origin);
