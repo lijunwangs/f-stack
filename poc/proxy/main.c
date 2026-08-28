@@ -86,7 +86,9 @@ static int loop(void *arg)
     int n, i;
     time_t now;
 
-    n = ev_wait(kq, events, MAX_EVENTS);
+    /* Don't wait on the network when a transfer is mid-flight and already
+     * owed another turn; just collect whatever is ready and get back to it. */
+    n = ev_wait(kq, events, MAX_EVENTS, session_pending() ? 0 : 1000);
     if (n < 0) {
         fprintf(stderr, "[poc] ev_wait: %s\n", strerror(errno));
         return -1;
@@ -122,6 +124,10 @@ static int loop(void *arg)
                 session_event(s, fd, events[i].events);
         }
     }
+
+    /* Transfers that hit their work budget get their next turn here, after
+     * the stack has had the thread back. */
+    session_run_pending();
 
     now = time(NULL);
     if (stats_interval > 0 && now - last_stats >= stats_interval) {

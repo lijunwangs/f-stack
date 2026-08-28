@@ -39,6 +39,14 @@ static const char *st_name[] = { "CH", "OCONNECT", "OHS", "CHS", "RELAY",
 static struct session *by_fd[POC_MAX_FD];
 static struct poc_stats stats;
 
+/*
+ * Sessions that stopped on their work budget and owe another visit. Held as
+ * client fds rather than pointers so an entry closed before its turn simply
+ * looks up as absent, with no dangling pointer to guard against.
+ */
+static int pending[POC_MAX_FD];
+static int pending_n;
+
 struct poc_stats *session_stats(void) { return &stats; }
 
 
@@ -116,16 +124,45 @@ static void fail(struct session *s, const char *why)
 
 /* ---- BIO pumping ------------------------------------------------------ */
 
-/* Keep an fd's registered interest in step with whether output is pending. */
-static void want_write(struct session *s, int fd, int on)
+/*
+ * Recompute what each leg should be woken for. Readiness is level-triggered,
+ * so anything left unread is re-reported every iteration: a leg whose peer
+ * cannot take more must stop asking to read, or the loop spins at full speed
+ * getting told about data it is not allowed to move yet. Watching a leg whose
+ * SSL object does not exist yet would spin the same way, hence the states.
+ */
+static void update_interest(struct session *s)
 {
-    int *mask = (fd == s->cfd) ? &s->cmask : &s->omask;
-    int want = NET_EV_READ | (on ? NET_EV_WRITE : 0);
+    int cong_c = s->cq.off < s->cq.len;   /* client leg output stuck */
+    int cong_o = s->oq.off < s->oq.len;   /* origin leg output stuck */
+    int cm, om;
 
-    if (*mask == want)
+    switch (s->state) {
+    case ST_OHS:
+        cm = 0;                           /* client leg has no SSL object yet */
+        om = NET_EV_READ | (cong_o ? NET_EV_WRITE : 0);
+        break;
+    case ST_CHS:
+        cm = NET_EV_READ | (cong_c ? NET_EV_WRITE : 0);
+        om = 0;
+        break;
+    case ST_RELAY:
+        if (s->closing) {                 /* only flushing what is owed */
+            cm = cong_c ? NET_EV_WRITE : 0;
+            om = cong_o ? NET_EV_WRITE : 0;
+            break;
+        }
+        cm = (cong_o ? 0 : NET_EV_READ) | (cong_c ? NET_EV_WRITE : 0);
+        om = (cong_c ? 0 : NET_EV_READ) | (cong_o ? NET_EV_WRITE : 0);
+        break;
+    default:
         return;
-    if (ev_set(s->kq, fd, want) == 0)
-        *mask = want;
+    }
+
+    if (cm != s->cmask && ev_set(s->kq, s->cfd, cm) == 0)
+        s->cmask = cm;
+    if (s->ofd >= 0 && om != s->omask && ev_set(s->kq, s->ofd, om) == 0)
+        s->omask = om;
 }
 
 /* Push the queued chunk out. 0 = emptied, 1 = socket full, -1 = error. */
@@ -177,7 +214,7 @@ static int pump_out(struct session *s, int fd, BIO *wbio, struct outq *q)
         rc = flush_q(fd, q);
     }
     if (rc >= 0)
-        want_write(s, fd, rc == 1);
+        update_interest(s);
     return rc;
 }
 
@@ -213,10 +250,10 @@ static int pump_in(int fd, BIO *rbio)
 }
 
 /*
- * Drain the socket into the SSL object's read BIO. Readiness is edge-
- * triggered, so stopping at the first read can strand bytes that already
- * arrived -- a handshake message split across segments would then wait for an
- * edge that never comes. Returns 1 normally, 0 on peer close, -1 on error.
+ * Drain the socket into the SSL object's read BIO, so a handshake message
+ * split across segments completes on the wakeup that carried its last piece
+ * rather than waiting for another. Handshakes are small and bounded, so this
+ * one runs to completion. Returns 1 normally, 0 on peer close, -1 on error.
  */
 static int fill_in(int fd, BIO *rbio)
 {
@@ -331,19 +368,20 @@ static int begin_client_tls(struct session *s)
 /* ---- relay ------------------------------------------------------------ */
 
 /*
- * Move everything available from one leg to the other, refilling the source
- * socket as the SSL object runs dry. The refill has to happen here: readiness
- * is edge-triggered on both stacks, so a single read per event leaves the
- * rest of a large transfer sitting in the socket with no further edge coming,
- * and the session then creeps along on whatever unrelated events show up.
+ * Move up to a budget's worth from one leg to the other, refilling the source
+ * socket as the SSL object runs dry. Both halves matter: reading only once per
+ * wakeup strands the rest of a large transfer, while draining it all in one
+ * visit starves a stack that shares this thread. So it drains, but only so far.
  *
- * Returns 0 to keep going, 1 when the source has ended, -2 when the scan
- * matched, -1 on a real error.
+ * Returns 0 when the source is exhausted or the peer pushed back, 1 when the
+ * source has ended, 2 when the budget ran out and more may remain, -2 when the
+ * scan matched, -1 on a real error.
  */
 static int relay_one(struct session *s, SSL *from, int from_fd, BIO *from_rbio,
                      SSL *to, int to_fd, BIO *to_wbio, struct outq *to_q)
 {
     uint8_t buf[RELAY_BUF_SZ];
+    size_t moved = 0;
 
     for (;;) {
         int n, e, rc, off = 0;
@@ -372,6 +410,9 @@ static int relay_one(struct session *s, SSL *from, int from_fd, BIO *from_rbio,
                 return -1;
             if (rc == 1)
                 return 0;       /* congested; the write event resumes us */
+            moved += (size_t)n;
+            if (moved >= RELAY_BUDGET)
+                return 2;       /* yield to the stack, finish next visit */
             continue;
         }
 
@@ -431,6 +472,15 @@ static void finish(struct session *s)
     session_close(s);
 }
 
+/* Queue this session for another relay visit, once. */
+static void mark_pending(struct session *s)
+{
+    if (s->in_pending || pending_n >= POC_MAX_FD)
+        return;
+    s->in_pending = 1;
+    pending[pending_n++] = s->cfd;
+}
+
 /*
  * Drain both directions once. Must be called whenever the session enters
  * RELAY, not only on a socket event: data can already be sitting in the read
@@ -470,19 +520,53 @@ static void relay_pump(struct session *s)
         fail(s, "relay to origin");
         return;
     }
-    if (r > 0) {
+    if (r == 1) {
         finish(s);
         return;
     }
+    if (r == 2)
+        mark_pending(s);
 
     r = relay_one(s, s->ossl, s->ofd, s->orbio,
                   s->cssl, s->cfd, s->cwbio, &s->cq);
-    if (r == -2)
+    if (r == -2) {
         blocked(s);
-    else if (r < 0)
+        return;
+    }
+    if (r < 0) {
         fail(s, "relay to client");
-    else if (r > 0)
+        return;
+    }
+    if (r == 1) {
         finish(s);
+        return;
+    }
+    if (r == 2)
+        mark_pending(s);
+    update_interest(s);
+}
+
+int session_pending(void) { return pending_n; }
+
+void session_run_pending(void)
+{
+    int n = pending_n;
+    int i;
+
+    /*
+     * Take the list as it stands: a session that runs out of budget again
+     * re-queues itself for the next iteration rather than being retried here,
+     * which is what keeps one big transfer from monopolising the thread.
+     */
+    pending_n = 0;
+    for (i = 0; i < n; i++) {
+        struct session *s = session_lookup(pending[i]);
+
+        if (!s || s->state != ST_RELAY)
+            continue;           /* closed, or moved on, before its turn */
+        s->in_pending = 0;
+        relay_pump(s);
+    }
 }
 
 /* ---- event entry point ------------------------------------------------ */

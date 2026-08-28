@@ -77,13 +77,18 @@ int ev_set(int ev, int fd, int events)
         EV_SET(&ch, fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
         ff_kevent(ev, &ch, 1, NULL, 0, NULL);
     }
+    /*
+     * Level-triggered on purpose: no EV_CLEAR. The relay hands control back
+     * to the stack before a large transfer is finished, so readiness has to
+     * be re-reported rather than announced once.
+     */
     if (events & NET_EV_READ) {
-        EV_SET(&ch, fd, EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, NULL);
+        EV_SET(&ch, fd, EVFILT_READ, EV_ADD, 0, 0, NULL);
         if (ff_kevent(ev, &ch, 1, NULL, 0, NULL) < 0)
             return -1;
     }
     if (events & NET_EV_WRITE) {
-        EV_SET(&ch, fd, EVFILT_WRITE, EV_ADD | EV_CLEAR, 0, 0, NULL);
+        EV_SET(&ch, fd, EVFILT_WRITE, EV_ADD, 0, 0, NULL);
         if (ff_kevent(ev, &ch, 1, NULL, 0, NULL) < 0)
             return -1;
     }
@@ -105,11 +110,12 @@ int ev_watch(int ev, int fd, int events, int add)
     return ff_kevent(ev, ch, n, NULL, 0, NULL);
 }
 
-int ev_wait(int ev, struct net_event *out, int max)
+int ev_wait(int ev, struct net_event *out, int max, int timeout_ms)
 {
     struct kevent evs[NET_MAX_EVENTS];
     int n, i;
 
+    (void)timeout_ms;   /* this stack polls; it never waits for an event */
     if (max > NET_MAX_EVENTS)
         max = NET_MAX_EVENTS;
     n = ff_kevent(ev, NULL, 0, evs, max, NULL);

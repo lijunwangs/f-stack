@@ -56,6 +56,12 @@ int ev_watch(int ev, int fd, int events, int add);
  * fd". Arming write interest without losing read interest needs this.
  */
 int ev_set(int ev, int fd, int events);
-int ev_wait(int ev, struct net_event *out, int max);
+/*
+ * Wait for readiness. timeout_ms caps the wait for an event-driven backend;
+ * a polling backend returns as soon as it has looked and ignores it. Pass 0
+ * when the caller already has work queued and only wants to collect whatever
+ * is ready right now.
+ */
+int ev_wait(int ev, struct net_event *out, int max, int timeout_ms);
 
 #endif /* POC_NET_H */

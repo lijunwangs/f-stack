@@ -19,6 +19,13 @@
 
 #define CH_BUF_MAX      16384   /* enough for any ClientHello */
 #define RELAY_BUF_SZ    16384   /* one TLS record */
+/*
+ * Bytes one leg may move before handing control back. On a run-to-completion
+ * stack the application and the stack share a thread, so draining a whole
+ * large transfer inside one callback keeps the stack from polling the NIC and
+ * from transmitting what has already been queued.
+ */
+#define RELAY_BUDGET    (4 * RELAY_BUF_SZ)
 #define MAX_SNI_LEN     256
 
 /* ---- ClientHello SNI parsing (sni.c) ---------------------------------- */

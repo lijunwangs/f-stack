@@ -90,7 +90,7 @@ int ev_set(int ev, int fd, int events)
         e.events |= EPOLLIN;
     if (events & NET_EV_WRITE)
         e.events |= EPOLLOUT;
-    e.events |= EPOLLET;
+    /* Level-triggered on purpose: see the note in net_fstack.c. */
 
     /* MOD first: the fd is already registered on every path but the first. */
     if (epoll_ctl(ev, EPOLL_CTL_MOD, fd, &e) == 0)
@@ -121,14 +121,14 @@ int ev_watch(int ev, int fd, int events, int add)
     return epoll_ctl(ev, EPOLL_CTL_MOD, fd, &e);
 }
 
-int ev_wait(int ev, struct net_event *out, int max)
+int ev_wait(int ev, struct net_event *out, int max, int timeout_ms)
 {
     struct epoll_event evs[NET_MAX_EVENTS];
     int n, i;
 
     if (max > NET_MAX_EVENTS)
         max = NET_MAX_EVENTS;
-    n = epoll_wait(ev, evs, max, 1000);
+    n = epoll_wait(ev, evs, max, timeout_ms);
     if (n < 0)
         return errno == EINTR ? 0 : -1;
 

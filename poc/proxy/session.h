@@ -34,6 +34,7 @@ struct session {
     struct outq cq, oq;         /* pending output, client and origin legs */
     int cmask, omask;           /* event interest currently registered */
     int closing;                /* stream ended; close once output drains */
+    int in_pending;             /* queued for another relay visit */
 
     uint8_t ch[CH_BUF_MAX];     /* buffered ClientHello, replayed later */
     size_t ch_len;
@@ -63,5 +64,14 @@ void session_event(struct session *s, int fd, int filter);
 void session_close(struct session *s);
 struct poc_stats *session_stats(void);
 int pump_in_raw(struct session *s);
+/*
+ * Give sessions that stopped on their work budget another turn. The event
+ * loop must call this once per iteration: on a run-to-completion stack the
+ * application shares its thread with the stack, so the relay returns before
+ * a large transfer is done and resumes here.
+ */
+void session_run_pending(void);
+/* Non-zero when a session is waiting for another visit. */
+int session_pending(void);
 
 #endif /* POC_SESSION_H */
