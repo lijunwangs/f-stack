@@ -378,6 +378,70 @@ static hs_database_t *compile(const struct patset *p, unsigned mode)
     return db;
 }
 
+/*
+ * The straddling match is the whole reason any of this exists, so prove it
+ * rather than assume it: plant one literal across a chunk boundary and check
+ * that each mode finds it exactly once. Running the same corpus with a zero
+ * window shows the window is load-bearing -- without it the match is missed
+ * outright, which is the failure this design exists to prevent.
+ */
+static void selftest_boundary(size_t chunk)
+{
+    const char *lit = "CONFIDENTIAL-PROJECT-000000";
+    size_t hlen = strlen(lit);
+    size_t len = chunk * 3;
+    char *c = malloc(len);
+    struct patset p;
+    hs_database_t *bdb, *sdb;
+    hs_scratch_t *bs = NULL, *ss = NULL;
+    struct mctx m_win = { 0, 0, 0 }, m_nowin = { 0, 0, 0 }, m_str = { 0, 0, 0 };
+    unsigned w = 0, unb = 0;
+
+    if (!c)
+        die("out of memory");
+    memset(c, 'a', len);
+    /* Half before the boundary, half after. */
+    memcpy(c + chunk - hlen / 2, lit, hlen);
+
+    patset_alloc(&p, 1);
+    p.expr[0] = strdup(lit);
+    p.flags[0] = HS_FLAG_DOTALL;
+    p.ids[0] = 0;
+    overlap_width(&p, &w, &unb);
+
+    bdb = compile(&p, HS_MODE_BLOCK);
+    sdb = compile(&p, HS_MODE_STREAM);
+    if (!bdb || !sdb)
+        die("selftest compile failed");
+    hs_alloc_scratch(bdb, &bs);
+    hs_alloc_scratch(sdb, &ss);
+
+    run_overlap(bdb, bs, c, len, chunk, w, &m_win);
+    run_overlap(bdb, bs, c, len, chunk, 0, &m_nowin);
+    run_stream(sdb, ss, c, len, chunk, &m_str);
+
+    printf("\ncorrectness: one match straddling a %zu-byte chunk boundary\n",
+           chunk);
+    printf("  %-34s %10llu %-8s  want %-13s %s\n", "overlap, window on",
+           m_win.matches, "", "1",
+           m_win.matches == 1 ? "PASS" : "FAIL");
+    printf("  %-34s %10llu %-8s  want %-13s %s\n", "streaming",
+           m_str.matches, "", "1",
+           m_str.matches == 1 ? "PASS" : "FAIL");
+    printf("  %-34s %10llu %-8s  %-18s %s\n", "overlap, window off",
+           m_nowin.matches, "", "(missed without it)",
+           m_nowin.matches == 0 ? "as expected" : "unexpected");
+    if (m_win.matches != 1 || m_str.matches != 1)
+        g_failures++;
+
+    hs_free_scratch(bs);
+    hs_free_scratch(ss);
+    hs_free_database(bdb);
+    hs_free_database(sdb);
+    patset_free(&p);
+    free(c);
+}
+
 /* ---- sweeps ----------------------------------------------------------- */
 
 static void sweep_class_count(const char *corpus, size_t len, size_t chunk)
@@ -613,6 +677,7 @@ int main(int argc, char *argv[])
         hs_free_database(db);
         patset_free(&p);
     } else {
+        selftest_boundary(chunk);
         sweep_class_count(corpus, CORPUS_BYTES, chunk);
         sweep_chunk(corpus, CORPUS_BYTES, CLASS_BOUNDED, 100);
         compare_modes(corpus, CORPUS_BYTES, chunk, CLASS_BOUNDED, 100);
