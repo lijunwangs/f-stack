@@ -16,12 +16,28 @@ else
   LIBS += $(shell pkg-config --libs openssl)
 endif
 
-all: $(TARGET)
+# The scan bench needs Hyperscan or Vectorscan; they share the libhs API and
+# pkg-config name, so either satisfies this. Skipped rather than fatal when
+# absent, so the TLS bench still builds on a machine without it.
+HS_OK := $(shell pkg-config --exists libhs && echo yes)
+ifeq ($(HS_OK),yes)
+  TARGETS += scan_bench
+  HS_CFLAGS := $(shell pkg-config --cflags libhs)
+  HS_LIBS := $(shell pkg-config --libs libhs)
+endif
+
+all: $(TARGET) $(TARGETS)
+ifneq ($(HS_OK),yes)
+	@echo "note: libhs not found, skipping scan_bench (apt install libhyperscan-dev)"
+endif
 
 $(TARGET): tls_bench.c
 	$(CC) $(CFLAGS) -o $@ $< $(LIBS)
 
+scan_bench: scan_bench.c
+	$(CC) $(CFLAGS) $(HS_CFLAGS) -o $@ $< $(HS_LIBS)
+
 clean:
-	rm -f $(TARGET)
+	rm -f $(TARGET) scan_bench
 
 .PHONY: all clean
