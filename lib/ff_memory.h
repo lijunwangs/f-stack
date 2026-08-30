@@ -39,9 +39,21 @@ extern "C" {
 
 /*
  * Configurable number of RX/TX ring descriptors
+ *
+ * Raised from 512 while measuring a TLS proxy on a vmxnet3 port. At 512 the
+ * bulk throughput of a single connection swung between 8 and 136 MB/s run to
+ * run; at 2048 it settled into a 40 to 76 MB/s band. The swings tracked how
+ * much data the peer had in flight -- growing the socket buffers made them
+ * worse, not better -- which is what a ring overflowing on bursts looks like
+ * rather than a window limit.
+ *
+ * These are compile-time rather than config-file values because
+ * TX_QUEUE_SIZE is also the bound of m_table below, indexed by the macros in
+ * ff_memory.c. Note the mbuf pool in ff_dpdk_if.c is derived from both, so
+ * raising them raises the pool with them.
  */
-#define RX_QUEUE_SIZE 512
-#define TX_QUEUE_SIZE 512
+#define RX_QUEUE_SIZE 2048
+#define TX_QUEUE_SIZE 2048
 
 /*
  * Try to avoid TX buffering if we have at least MAX_TX_BURST packets to send.
