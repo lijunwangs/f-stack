@@ -28,7 +28,7 @@ gen_cert() {
     rm -f "${DIR}/origin_crt.pem" "${DIR}/origin_key.pem"
     openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
         -keyout "${DIR}/origin_key.pem" -out "${DIR}/origin_crt.pem" \
-        -days 1 -nodes -subj "/CN=${HOSTNAME_CN}" \
+        -days 365 -nodes -subj "/CN=${HOSTNAME_CN}" \
         -addext "subjectAltName=DNS:${HOSTNAME_CN}" 2>/dev/null
 }
 

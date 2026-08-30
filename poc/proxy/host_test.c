@@ -104,6 +104,13 @@ static int drive(SSL *a, SSL *b)
     return -1;
 }
 
+/* X509_NAME_add_entry_by_txt spelled once, for the fixture above. */
+static void set_cn_for_test(X509_NAME *name, const char *cn)
+{
+    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
+                               (const unsigned char *)cn, -1, -1, 0);
+}
+
 static void test_forge(void)
 {
     const char *host = "files.example.invalid";
@@ -179,6 +186,36 @@ static void test_forge(void)
 
     SSL_CTX_free(cctx);
     remove(capath);
+    /*
+     * Regression: an origin certificate whose dates have passed must not
+     * produce a leaf that has also expired. Copying the origin's window did
+     * exactly that, and only clients that verify ever noticed -- load
+     * generators skip verification, so it stayed hidden under traffic.
+     */
+    {
+        X509 *stale = X509_new();
+        SSL_CTX *sctx2;
+
+        X509_set_version(stale, 2);
+        set_cn_for_test(X509_get_subject_name(stale), "stale.example.invalid");
+        X509_gmtime_adj(X509_getm_notBefore(stale), -60L * 60 * 48);
+        X509_gmtime_adj(X509_getm_notAfter(stale), -60L * 60 * 24);
+        ok("test fixture really is expired",
+           X509_cmp_current_time(X509_get0_notAfter(stale)) < 0);
+
+        sctx2 = forge_server_ctx("stale.example.invalid", stale);
+        ok("mints a leaf from an expired origin", sctx2 != NULL);
+        if (sctx2) {
+            X509 *leaf = SSL_CTX_get0_certificate(sctx2);
+
+            ok("that leaf is valid now, not expired with the origin",
+               leaf &&
+               X509_cmp_current_time(X509_get0_notAfter(leaf)) > 0 &&
+               X509_cmp_current_time(X509_get0_notBefore(leaf)) < 0);
+        }
+        X509_free(stale);
+    }
+
     forge_fini();
 }
 

@@ -14,6 +14,9 @@
 #include "proxy.h"
 
 #define FORGE_CACHE_MAX 4096
+/* Forged leaves are short lived by design; the gateway re-mints freely. */
+#define LEAF_LIFETIME_SECS (60L * 60 * 24 * 7)
+#define LEAF_SKEW_SECS     300
 
 struct forge_entry {
     char sni[MAX_SNI_LEN];
@@ -121,7 +124,6 @@ int forge_export_ca(const char *path)
 static X509 *mint_leaf(const char *sni, X509 *mirror)
 {
     X509 *leaf = X509_new();
-    X509_NAME *subject;
     char san[MAX_SNI_LEN + 8];
 
     if (!leaf)
@@ -132,18 +134,35 @@ static X509 *mint_leaf(const char *sni, X509 *mirror)
     X509_set_pubkey(leaf, leaf_key);
     X509_set_issuer_name(leaf, X509_get_subject_name(ca_crt));
 
-    if (mirror) {
-        /* Mirror the origin's subject and validity window. */
+    if (mirror)
         X509_set_subject_name(leaf, X509_get_subject_name(mirror));
-        ASN1_TIME_set_string(X509_getm_notBefore(leaf),
-            (const char *)ASN1_STRING_get0_data(X509_get0_notBefore(mirror)));
-        ASN1_TIME_set_string(X509_getm_notAfter(leaf),
-            (const char *)ASN1_STRING_get0_data(X509_get0_notAfter(mirror)));
-    } else {
-        subject = X509_get_subject_name(leaf);
-        set_cn(subject, sni);
-        X509_gmtime_adj(X509_getm_notBefore(leaf), 0);
-        X509_gmtime_adj(X509_getm_notAfter(leaf), 60L * 60 * 24);
+    else
+        set_cn(X509_get_subject_name(leaf), sni);
+
+    /*
+     * Issue our own validity window rather than copying the origin's. A
+     * forged leaf has to be valid now, and the origin's dates need not be:
+     * mirroring them once minted a leaf that had expired the day before, so
+     * every client that actually verifies rejected the handshake while
+     * clients that skip verification sailed through -- exactly the kind of
+     * failure that hides inside a load test. The backdated start absorbs
+     * clock skew between the gateway and its clients.
+     */
+    X509_gmtime_adj(X509_getm_notBefore(leaf), -LEAF_SKEW_SECS);
+    X509_gmtime_adj(X509_getm_notAfter(leaf), LEAF_LIFETIME_SECS);
+
+    /*
+     * Never vouch for a destination for longer than it vouches for itself,
+     * but only when the origin's expiry is still ahead of us. An origin
+     * certificate that has already expired is an upstream trust failure for
+     * policy to rule on, and must not quietly become a leaf that cannot work.
+     */
+    if (mirror) {
+        const ASN1_TIME *upstream = X509_get0_notAfter(mirror);
+
+        if (X509_cmp_current_time(upstream) > 0 &&
+            ASN1_TIME_compare(upstream, X509_get0_notAfter(leaf)) < 0)
+            X509_set1_notAfter(leaf, upstream);
     }
 
     /* SAN must carry the SNI regardless of what the origin said, or clients
