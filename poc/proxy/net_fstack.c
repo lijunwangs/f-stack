@@ -1,6 +1,10 @@
 /* Platform layer over F-Stack: ff_* sockets and kqueue. */
 
+#include <stdio.h>
 #include <sys/ioctl.h>
+
+#include <rte_ethdev.h>
+#include <rte_mempool.h>
 
 #include "ff_api.h"
 #include "ff_config.h"
@@ -133,4 +137,38 @@ int ev_wait(int ev, struct net_event *out, int max, int timeout_ms)
             out[i].events |= NET_EV_ERR;
     }
     return n;
+}
+
+/*
+ * Port and buffer counters, straight from DPDK. imissed is the one that
+ * matters most: it counts packets the port had nowhere to put, which is
+ * invisible to the sockets above and looks like a slow peer from up there.
+ * A falling free-buffer count over a run means the pool is leaking, which
+ * starves the receive refill and stops the port dead.
+ *
+ * Port 0 and mbuf_pool_0 match a single-port, single-socket config; a wider
+ * deployment would walk the port list.
+ */
+void net_stack_stats(char *out, size_t len)
+{
+    struct rte_eth_stats st;
+    struct rte_mempool *mp;
+    unsigned avail = 0, used = 0;
+
+    if (rte_eth_stats_get(0, &st) != 0) {
+        snprintf(out, len, "");
+        return;
+    }
+    mp = rte_mempool_lookup("mbuf_pool_0");
+    if (mp) {
+        avail = rte_mempool_avail_count(mp);
+        used = rte_mempool_in_use_count(mp);
+    }
+    snprintf(out, len,
+             " | port ipkts=%llu opkts=%llu imissed=%llu ierr=%llu oerr=%llu "
+             "rxnombuf=%llu mbuf=%u/%u",
+             (unsigned long long)st.ipackets, (unsigned long long)st.opackets,
+             (unsigned long long)st.imissed, (unsigned long long)st.ierrors,
+             (unsigned long long)st.oerrors, (unsigned long long)st.rx_nombuf,
+             avail, avail + used);
 }

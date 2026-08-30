@@ -70,15 +70,19 @@ static void print_stats(void)
     struct poc_stats *s = session_stats();
     unsigned long hits = 0, mints = 0, sbytes = 0, shits = 0;
 
+    char wire[256];
+
     forge_stats(&hits, &mints);
     scan_stats(&sbytes, &shits);
+    net_stack_stats(wire, sizeof(wire));
     printf("[poc] sessions=%lu ohs=%lu chs=%lu done=%lu failed=%lu blocked=%lu "
            "rx=%luKB tx=%luKB certs=%lu/%lu scanned=%luKB matches=%lu "
-           "txblock=%lu txnobufs=%lu\n",
+           "txblock=%lu txnobufs=%lu%s\n",
            s->sessions, s->origin_handshakes, s->client_handshakes,
            s->completed, s->failed, s->blocked,
            s->rx_bytes / 1024, s->tx_bytes / 1024,
-           mints, hits, sbytes / 1024, shits, s->tx_block, s->tx_nobufs);
+           mints, hits, sbytes / 1024, shits, s->tx_block, s->tx_nobufs,
+           wire);
     fflush(stdout);
 }
 

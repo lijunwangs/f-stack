@@ -144,3 +144,10 @@ int ev_wait(int ev, struct net_event *out, int max, int timeout_ms)
     }
     return n;
 }
+
+/* The kernel stack exposes this through /proc and ethtool, not through us. */
+void net_stack_stats(char *out, size_t len)
+{
+    if (len)
+        out[0] = '\0';
+}

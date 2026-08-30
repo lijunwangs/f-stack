@@ -64,4 +64,13 @@ int ev_set(int ev, int fd, int events);
  */
 int ev_wait(int ev, struct net_event *out, int max, int timeout_ms);
 
+/*
+ * Append whatever the stack can say about the wire underneath it: packets in
+ * and out, what the port dropped, and how many buffers are left. Counters the
+ * application cannot see otherwise, and the ones that separate "we are slow"
+ * from "the port stopped receiving". Writes an empty string on a stack that
+ * has nothing to add, so callers can print it unconditionally.
+ */
+void net_stack_stats(char *out, size_t len);
+
 #endif /* POC_NET_H */
