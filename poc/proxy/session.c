@@ -124,6 +124,8 @@ static void fail(struct session *s, const char *why)
     session_close(s);
 }
 
+static void mark_pending(struct session *s);
+
 /* ---- BIO pumping ------------------------------------------------------ */
 
 /*
@@ -222,6 +224,17 @@ static int pump_out(struct session *s, int fd, BIO *wbio, struct outq *q)
     }
     if (rc >= 0)
         update_interest(s);
+    /*
+     * A congested leg puts itself back on the resume queue instead of waiting
+     * to be told the socket drained. Relying on that notification deadlocked:
+     * the relay would hand back one full response, mute the leg it could not
+     * feed, and then sit forever because the write readiness it was waiting
+     * for never arrived. Only nginx timing the idle connection out sixty
+     * seconds later broke the cycle. Re-queueing costs a revisit that finds
+     * nothing to do; the deadlock cost the whole session.
+     */
+    if (rc == 1)
+        mark_pending(s);
     return rc;
 }
 
@@ -569,9 +582,16 @@ void session_run_pending(void)
     for (i = 0; i < n; i++) {
         struct session *s = session_lookup(pending[i]);
 
-        if (!s || s->state != ST_RELAY)
-            continue;           /* closed, or moved on, before its turn */
+        if (!s)
+            continue;           /* closed before its turn */
+        /*
+         * Clear the flag before deciding whether to run, or a session queued
+         * while it was still handshaking would keep the flag set for good and
+         * could never be queued again -- the same stall by a slower route.
+         */
         s->in_pending = 0;
+        if (s->state != ST_RELAY)
+            continue;
         relay_pump(s);
     }
 }
