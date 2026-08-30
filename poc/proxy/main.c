@@ -8,6 +8,7 @@
  *   POC_PATTERN      literal the scan looks for   (default "SECRET-CANARY")
  *   POC_CA_OUT       write the POC CA here as PEM (default poc_ca.pem)
  *   POC_STATS_SEC    stats interval in seconds    (default 5)
+ *   POC_RELAY_BUDGET bytes one leg moves per visit  (default 65536)
  */
 
 #include <arpa/inet.h>
@@ -199,6 +200,12 @@ int main(int argc, char *argv[])
     }
     port = env_int("POC_LISTEN_PORT", 8443);
     stats_interval = env_int("POC_STATS_SEC", 5);
+    /*
+     * How much one leg may move before handing the thread back. Tunable
+     * because the port drops packets when the stack waits too long for it,
+     * and where that line falls is what we are measuring.
+     */
+    relay_budget = (size_t)env_int("POC_RELAY_BUDGET", RELAY_BUDGET_DEFAULT);
 
     /*
      * A proxy writes into sockets the peer may have just closed, which is

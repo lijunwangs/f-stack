@@ -25,7 +25,8 @@
  * large transfer inside one callback keeps the stack from polling the NIC and
  * from transmitting what has already been queued.
  */
-#define RELAY_BUDGET    (4 * RELAY_BUF_SZ)
+#define RELAY_BUDGET_DEFAULT (4 * RELAY_BUF_SZ)
+extern size_t relay_budget;     /* set once at startup from POC_RELAY_BUDGET */
 #define MAX_SNI_LEN     256
 
 /* ---- ClientHello SNI parsing (sni.c) ---------------------------------- */
