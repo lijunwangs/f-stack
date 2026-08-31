@@ -19,7 +19,7 @@
  * as a write comes up short.
  */
 struct outq {
-    uint8_t buf[RELAY_BUF_SZ];
+    uint8_t buf[OUTQ_BUF_SZ];
     size_t len;
     size_t off;
 };

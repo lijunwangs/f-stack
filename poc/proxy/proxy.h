@@ -26,6 +26,14 @@
  * from transmitting what has already been queued.
  */
 #define RELAY_BUDGET_DEFAULT (16 * RELAY_BUF_SZ)
+/*
+ * Staging buffer for the send side, sized independently of the TLS record.
+ * A record caps what one SSL_read returns, but nothing caps how much
+ * ciphertext we hand the socket at once, and writing a record at a time held
+ * the proxy to about 6.8 KB per socket write while a plain sender reaching
+ * 297 MB/s on this stack wrote up to a megabyte per call.
+ */
+#define OUTQ_BUF_SZ     65536
 extern size_t relay_budget;     /* set once at startup from POC_RELAY_BUDGET */
 #define MAX_SNI_LEN     256
 
