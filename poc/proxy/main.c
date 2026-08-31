@@ -38,6 +38,8 @@ const char *prof_name[P_N] = {
     "sslrd", "sslwr", "scan", "hshake"
 };
 uint64_t prof_events;
+uint64_t prof_rd_calls, prof_rd_bytes, prof_rd_done;
+uint64_t prof_queued, prof_queued_n;
 uint64_t prof_relay_calls;
 uint64_t prof_relay_bytes;
 static uint64_t prof_mark;
@@ -134,9 +136,17 @@ static void print_stats(void)
                prof_relay_bytes / 1e6,
                prof_relay_calls ?
                    prof_relay_bytes / prof_relay_calls / 1024.0 : 0.0);
+        printf("[poc] reads: n=%lu avg_got=%.0fB avg_queued_before=%.0fB\n",
+               (unsigned long)prof_rd_done,
+               prof_rd_done ? (double)prof_rd_bytes / prof_rd_done : 0.0,
+               prof_queued_n ? (double)prof_queued / prof_queued_n : 0.0);
         prof_events = 0;
         prof_relay_calls = 0;
         prof_relay_bytes = 0;
+        prof_rd_bytes = 0;
+        prof_rd_done = 0;
+        prof_queued = 0;
+        prof_queued_n = 0;
     }
     fflush(stdout);
     session_report_stalled();

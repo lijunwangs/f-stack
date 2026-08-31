@@ -73,4 +73,12 @@ int ev_wait(int ev, struct net_event *out, int max, int timeout_ms);
  */
 void net_stack_stats(char *out, size_t len);
 
+/*
+ * Bytes already queued on a socket. Read sizes alone cannot say whether a
+ * short read means the buffer was nearly empty or that the stack declined to
+ * hand over what it had; comparing this against what the read returns can.
+ * Returns -1 if the stack cannot say.
+ */
+int net_pending(int fd);
+
 #endif /* POC_NET_H */

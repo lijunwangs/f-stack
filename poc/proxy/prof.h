@@ -34,6 +34,8 @@ extern const char *prof_name[P_N];
 extern uint64_t prof_events;
 extern uint64_t prof_relay_calls;
 extern uint64_t prof_relay_bytes;
+extern uint64_t prof_rd_calls, prof_rd_bytes, prof_rd_done;
+extern uint64_t prof_queued, prof_queued_n;
 
 static inline uint64_t prof_tsc(void)
 {

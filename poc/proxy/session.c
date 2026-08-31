@@ -268,7 +268,20 @@ static int pump_in(int fd, BIO *rbio)
     char buf[RELAY_BUF_SZ];
     ssize_t n;
 
+    /* Sample cheaply: every 64th read, what was queued versus what we got. */
+    if ((prof_rd_calls++ & 63) == 0) {
+        int q = net_pending(fd);
+
+        if (q >= 0) {
+            prof_queued += (uint64_t)q;
+            prof_queued_n++;
+        }
+    }
     PROF_V(P_SOCKRD, n, net_read(fd, buf, sizeof(buf)));
+    if (n > 0) {
+        prof_rd_bytes += (uint64_t)n;
+        prof_rd_done++;
+    }
     if (n > 0) {
         BIO_write(rbio, buf, (int)n);
         stats.rx_bytes += (unsigned long)n;

@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include <sys/epoll.h>
+#include <sys/ioctl.h>
 
 #include "net.h"
 
@@ -150,4 +151,13 @@ void net_stack_stats(char *out, size_t len)
 {
     if (len)
         out[0] = '\0';
+}
+
+int net_pending(int fd)
+{
+    int n = 0;
+
+    if (ioctl(fd, FIONREAD, &n) < 0)
+        return -1;
+    return n;
 }

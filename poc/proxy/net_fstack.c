@@ -193,3 +193,12 @@ void net_stack_stats(char *out, size_t len)
              (unsigned long long)st.oerrors, (unsigned long long)st.rx_nombuf,
              avail, avail + used);
 }
+
+int net_pending(int fd)
+{
+    int n = 0;
+
+    if (ff_ioctl(fd, FIONREAD, &n) < 0)
+        return -1;
+    return n;
+}
