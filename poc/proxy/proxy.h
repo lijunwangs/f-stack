@@ -57,8 +57,13 @@ extern size_t loop_moved;       /* reset each pass by the event loop */
  * anything -- measured at 6 to 8 KB per visit against the kernel's 168 KB,
  * with a full loop iteration, SSL_read and socket read spent on each.
  *
- * So wait for a batch worth having, bounded by a deadline so a small or
- * finished transfer is never left sitting. Zero disables it.
+ * Waiting for a batch worth having was tried and is worse, so this defaults
+ * off. Measured, threshold against throughput at 1 / 8 / 32 connections:
+ * off gave 18.4 / 40.9 / 322.7 MB/s, 32 KB gave 1.7 / 10.3 / 347.9, and
+ * 128 KB gave 0.5 / 7.6 / 351.6. It buys a little at high concurrency and
+ * destroys the low end, because that end is latency-bound: the origin is
+ * idle waiting for the next request, so delaying a read delays the whole
+ * cycle. The knob stays for the high-concurrency case; zero disables it.
  */
 #define RX_BATCH_MIN_DEFAULT   0
 #define RX_BATCH_WAIT_US_DEF   200
