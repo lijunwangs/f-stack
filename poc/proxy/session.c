@@ -530,6 +530,9 @@ static void mark_pending(struct session *s)
 static void relay_pump(struct session *s)
 {
     int r;
+    unsigned long moved0 = s->moved;
+
+    prof_relay_calls++;
 
     /* A write event may have unblocked either leg; drain before reading on. */
     if (pump_out(s, s->cfd, s->cwbio, &s->cq) < 0) {
@@ -582,6 +585,7 @@ static void relay_pump(struct session *s)
     if (r == 2)
         mark_pending(s);
     update_interest(s);
+    prof_relay_bytes += s->moved - moved0;
 }
 
 int session_pending(void) { return pending_n; }

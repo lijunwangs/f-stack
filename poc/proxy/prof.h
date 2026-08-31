@@ -30,6 +30,10 @@ enum {
 extern uint64_t prof_cyc[P_N];
 extern uint64_t prof_cnt[P_N];
 extern const char *prof_name[P_N];
+/* Readiness events actually returned, against the number of times we asked. */
+extern uint64_t prof_events;
+extern uint64_t prof_relay_calls;
+extern uint64_t prof_relay_bytes;
 
 static inline uint64_t prof_tsc(void)
 {

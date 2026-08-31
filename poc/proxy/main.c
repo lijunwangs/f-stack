@@ -37,6 +37,9 @@ const char *prof_name[P_N] = {
     "evwait", "evset", "sockrd", "sockwr",
     "sslrd", "sslwr", "scan", "hshake"
 };
+uint64_t prof_events;
+uint64_t prof_relay_calls;
+uint64_t prof_relay_bytes;
 static uint64_t prof_mark;
 
 void prof_report(char *out, size_t len, uint64_t interval_cycles)
@@ -115,11 +118,25 @@ static void print_stats(void)
         char prof[512];
         uint64_t now = prof_tsc();
 
+        unsigned long prof_wait_calls = (unsigned long)prof_cnt[P_EVWAIT];
+
         prof[0] = '\0';
         prof_report(prof, sizeof(prof), now - prof_mark);
         prof_mark = now;
         if (prof[0])
             printf("[poc] cpu:%s\n", prof);
+        printf("[poc] loop: waits=%lu events=%lu ev_per_wait=%.2f "
+               "relay_calls=%lu relay_MB=%.1f MB_per_relay=%.1fKB\n",
+               (unsigned long)prof_wait_calls,
+               (unsigned long)prof_events,
+               prof_wait_calls ? (double)prof_events / prof_wait_calls : 0.0,
+               (unsigned long)prof_relay_calls,
+               prof_relay_bytes / 1e6,
+               prof_relay_calls ?
+                   prof_relay_bytes / prof_relay_calls / 1024.0 : 0.0);
+        prof_events = 0;
+        prof_relay_calls = 0;
+        prof_relay_bytes = 0;
     }
     fflush(stdout);
     session_report_stalled();
@@ -134,6 +151,8 @@ static int loop(void *arg)
      * owed another turn; just collect whatever is ready and get back to it. */
     PROF_V(P_EVWAIT, n, ev_wait(kq, events, MAX_EVENTS,
                                 session_pending() ? 0 : 1000));
+    if (n > 0)
+        prof_events += (uint64_t)n;
     if (n < 0) {
         fprintf(stderr, "[poc] ev_wait: %s\n", strerror(errno));
         return -1;
