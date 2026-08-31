@@ -998,11 +998,8 @@ init_port_start(void)
                         ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "LRO is supported\n");
                         port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_TCP_LRO;
                         pconf->hw_features.rx_lro = 1;
-                        if (dev_info.max_lro_pkt_size > 0) {
-                            port_conf.rxmode.max_lro_pkt_size = dev_info.max_lro_pkt_size;
-                        } else {
-                            port_conf.rxmode.max_lro_pkt_size = dev_info.max_rx_pktlen;
-                        }
+                        /* The frame size is set once the MTU is known, just
+                         * before rte_eth_dev_configure; see below. */
                     } else {
                         ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "LRO is not supported, fallback to software\n");
                         pconf->hw_features.sw_lro = 1;
@@ -1105,6 +1102,38 @@ init_port_start(void)
 
             if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
                 continue;
+            }
+
+            /*
+             * Size the LRO frame the way ethdev is about to check it.
+             *
+             * When a PMD reports no max_lro_pkt_size of its own -- vmxnet3
+             * reports zero -- rte_eth_dev_configure demands the configured
+             * value equal the frame length it derives from the MTU, and
+             * rejects anything else outright:
+             *
+             *   max_lro_pkt_size 16384 != 8884 is not allowed
+             *
+             * which is what using dev_info.max_rx_pktlen here produced, so
+             * LRO could not be enabled on such a port at all. The overhead is
+             * derived the same way ethdev derives it, from the gap between
+             * the PMD's maximum frame and maximum MTU.
+             */
+            if (pconf->hw_features.rx_lro) {
+                if (dev_info.max_lro_pkt_size > 0) {
+                    port_conf.rxmode.max_lro_pkt_size =
+                        dev_info.max_lro_pkt_size;
+                } else {
+                    uint32_t mtu = port_conf.rxmode.mtu ?
+                        port_conf.rxmode.mtu : RTE_ETHER_MTU;
+                    uint32_t overhead =
+                        (dev_info.max_mtu != UINT16_MAX &&
+                         dev_info.max_rx_pktlen > dev_info.max_mtu) ?
+                        dev_info.max_rx_pktlen - dev_info.max_mtu :
+                        RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN;
+
+                    port_conf.rxmode.max_lro_pkt_size = mtu + overhead;
+                }
             }
 
             ret = rte_eth_dev_configure(port_id, nb_queues, nb_queues, &port_conf);
