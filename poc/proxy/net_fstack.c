@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <sys/ioctl.h>
+#include <sys/time.h>
 
 #include <rte_ethdev.h>
 #include <rte_mempool.h>
@@ -154,6 +155,7 @@ void net_stack_stats(char *out, size_t len)
     struct rte_eth_stats st;
     struct rte_mempool *mp;
     unsigned avail = 0, used = 0;
+    double skew = 0.0;
 
     if (rte_eth_stats_get(0, &st) != 0) {
         snprintf(out, len, "");
@@ -164,9 +166,28 @@ void net_stack_stats(char *out, size_t len)
         avail = rte_mempool_avail_count(mp);
         used = rte_mempool_in_use_count(mp);
     }
+    /*
+     * The stack's own clock, next to the host's. TCP output stalls when the
+     * send buffer is full, because sosend returns EWOULDBLOCK without calling
+     * tcp_output: only an incoming ACK or a timer can restart it. If this
+     * clock is not advancing then no timer will ever fire, and a connection
+     * that stops has no way back. Comparing the two says which.
+     */
+    {
+        struct timeval ftv;
+        struct timespec hts;
+
+        ff_gettimeofday(&ftv, NULL);
+        clock_gettime(CLOCK_REALTIME, &hts);
+        skew = (double)ftv.tv_sec + ftv.tv_usec / 1e6
+             - ((double)hts.tv_sec + hts.tv_nsec / 1e9);
+    }
+
     snprintf(out, len,
+             " | stackclock=%+.3fs vs host"
              " | port ipkts=%llu opkts=%llu imissed=%llu ierr=%llu oerr=%llu "
              "rxnombuf=%llu mbuf=%u/%u",
+             skew,
              (unsigned long long)st.ipackets, (unsigned long long)st.opackets,
              (unsigned long long)st.imissed, (unsigned long long)st.ierrors,
              (unsigned long long)st.oerrors, (unsigned long long)st.rx_nombuf,
