@@ -9,6 +9,7 @@
  */
 
 #include <errno.h>
+#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,6 +41,16 @@ static const char *st_name[] = { "CH", "OCONNECT", "OHS", "CHS", "RELAY",
 size_t relay_budget = RELAY_BUDGET_DEFAULT;
 size_t loop_budget = LOOP_BUDGET_DEFAULT;
 size_t loop_moved;
+size_t rx_batch_min = RX_BATCH_MIN_DEFAULT;
+long rx_batch_wait_us = RX_BATCH_WAIT_US_DEF;
+
+static uint64_t now_us(void)
+{
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)(ts.tv_nsec / 1000);
+}
 
 static struct session *by_fd[POC_MAX_FD];
 static struct poc_stats stats;
@@ -565,6 +576,24 @@ static void relay_pump(struct session *s)
             session_close(s);
         }
         return;
+    }
+
+    /*
+     * Let a worthwhile batch gather before spending a visit on it. Readiness
+     * is level-triggered, so returning here costs nothing: the next pass
+     * offers the session again, and the deadline guarantees it is serviced
+     * even if no more data ever arrives.
+     */
+    if (rx_batch_min) {
+        uint64_t now = now_us();
+        int qc = net_pending(s->cfd);
+        int qo = s->ofd >= 0 ? net_pending(s->ofd) : 0;
+        size_t queued = (size_t)(qc > 0 ? qc : 0) + (size_t)(qo > 0 ? qo : 0);
+
+        if (queued < rx_batch_min &&
+            now - s->last_svc_us < (uint64_t)rx_batch_wait_us)
+            return;
+        s->last_svc_us = now;
     }
 
     r = relay_one(s, s->cssl, s->cfd, s->crbio,

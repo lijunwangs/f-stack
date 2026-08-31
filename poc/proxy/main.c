@@ -277,6 +277,8 @@ int main(int argc, char *argv[])
      */
     relay_budget = (size_t)env_int("POC_RELAY_BUDGET", RELAY_BUDGET_DEFAULT);
     loop_budget = (size_t)env_int("POC_LOOP_BUDGET", LOOP_BUDGET_DEFAULT);
+    rx_batch_min = (size_t)env_int("POC_RX_BATCH", RX_BATCH_MIN_DEFAULT);
+    rx_batch_wait_us = env_int("POC_RX_WAIT_US", RX_BATCH_WAIT_US_DEF);
 
     /*
      * A proxy writes into sockets the peer may have just closed, which is

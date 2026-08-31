@@ -38,6 +38,7 @@ struct session {
     unsigned long moved;        /* plaintext bytes relayed, for stall detection */
     unsigned long moved_seen;   /* value at the last stall check */
     int stalls;                 /* consecutive checks with no progress */
+    uint64_t last_svc_us;       /* when the relay last serviced this session */
 
     uint8_t ch[CH_BUF_MAX];     /* buffered ClientHello, replayed later */
     size_t ch_len;

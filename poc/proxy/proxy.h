@@ -46,6 +46,24 @@
 #define LOOP_BUDGET_DEFAULT (256 * 1024)
 extern size_t loop_budget;      /* POC_LOOP_BUDGET */
 extern size_t loop_moved;       /* reset each pass by the event loop */
+/*
+ * Deliberate receive-side batching.
+ *
+ * On a kernel stack the receive path runs ahead of the application: softirq
+ * keeps filling the socket while the proxy is busy with crypto, so the next
+ * read finds a hundred kilobytes waiting and one visit moves a fat batch. A
+ * run-to-completion stack shares its thread with the application, so the
+ * relay drains each connection the moment data lands and never accumulates
+ * anything -- measured at 6 to 8 KB per visit against the kernel's 168 KB,
+ * with a full loop iteration, SSL_read and socket read spent on each.
+ *
+ * So wait for a batch worth having, bounded by a deadline so a small or
+ * finished transfer is never left sitting. Zero disables it.
+ */
+#define RX_BATCH_MIN_DEFAULT   0
+#define RX_BATCH_WAIT_US_DEF   200
+extern size_t rx_batch_min;     /* POC_RX_BATCH bytes */
+extern long rx_batch_wait_us;   /* POC_RX_WAIT_US */
 extern size_t relay_budget;     /* set once at startup from POC_RELAY_BUDGET */
 #define MAX_SNI_LEN     256
 
