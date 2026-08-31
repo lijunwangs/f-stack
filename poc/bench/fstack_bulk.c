@@ -108,12 +108,33 @@ static void push(int fd)
     total_responses++;
 }
 
+/*
+ * Retry every connection that still owes bytes, without waiting to be told
+ * the socket drained. This separates the two possible faults: if the writes
+ * start succeeding, write readiness simply was not being reported and polling
+ * is a workaround; if they keep returning EAGAIN, the send buffer genuinely
+ * never drains and the stack is not transmitting at all.
+ */
+static int poll_stalled;
+
+static void retry_stalled(void)
+{
+    int fd;
+
+    if (!poll_stalled)
+        return;
+    for (fd = 0; fd < MAX_FD; fd++)
+        if (active[fd] && sent[fd] < response_len)
+            push(fd);
+}
+
 static int loop(void *arg)
 {
     struct kevent events[MAX_EVENTS];
     int n, i;
     time_t now;
 
+    retry_stalled();
     n = ff_kevent(kq, NULL, 0, events, MAX_EVENTS, NULL);
     for (i = 0; i < n; i++) {
         int fd = (int)events[i].ident;
@@ -174,6 +195,7 @@ int main(int argc, char *argv[])
     int on = 1;
 
     build_response();
+    poll_stalled = getenv("BULK_POLL") != NULL;
     if (ff_init(argc, argv) != 0) {
         fprintf(stderr, "ff_init failed\n");
         return 1;
@@ -204,7 +226,8 @@ int main(int argc, char *argv[])
     watch(listen_fd, EVFILT_READ, 1);
     last_report = time(NULL);
 
-    printf("[bulk] serving %d-byte bodies on 8080\n", BODY_BYTES);
+    printf("[bulk] serving %d-byte bodies on 8080, poll_stalled=%d\n",
+           BODY_BYTES, poll_stalled);
     fflush(stdout);
     ff_run(loop, NULL);
     return 0;
