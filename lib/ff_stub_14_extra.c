@@ -16,6 +16,7 @@
 
 #include <sys/cdefs.h>
 #include <sys/param.h>
+#include <sys/limits.h>
 #include <sys/types.h>
 #include <sys/kernel.h>
 #include <sys/systm.h>
@@ -146,10 +147,65 @@ void buf_ring_free(struct buf_ring *br, struct malloc_type *type)
     
 }
 
+/*
+ * Compute the absolute deadline a callout should fire at.
+ *
+ * This was an empty stub, which silently disabled every TCP timer in the
+ * stack. tcp_timer_activate() passes &tp->t_timers[which] here and then asks
+ * tcp_timer_next() for the earliest deadline; with nothing ever written, the
+ * entry stayed at SBT_MAX, tcp_timer_next() reported no timer, and the arming
+ * path fell through to callout_stop(). Every request to start a retransmit,
+ * persist, delayed-ack or keepalive timer therefore stopped it instead.
+ *
+ * The visible result was a connection that transferred a few hundred KB and
+ * then hung forever: one segment lost, no retransmit timer to recover it,
+ * snd_una frozen, the congestion window full of unacked data, and a send
+ * buffer that could never drain.
+ */
 void callout_when(sbintime_t sbt, sbintime_t precision, int flags, sbintime_t *sbt_out, sbintime_t *precision_out);
 void callout_when(sbintime_t sbt, sbintime_t precision, int flags, sbintime_t *sbt_out, sbintime_t *precision_out)
 {
-    
+    sbintime_t to_sbt;
+
+    if ((flags & (C_ABSOLUTE | C_PRECALC)) != 0) {
+        *sbt_out = sbt;
+        *precision_out = precision;
+        return;
+    }
+    /* A hardclock-based timer cannot resolve finer than one tick. */
+    if ((flags & C_HARDCLOCK) != 0 && sbt < tick_sbt)
+        sbt = tick_sbt;
+
+    to_sbt = sbinuptime();
+    if (SBT_MAX - to_sbt < sbt)
+        to_sbt = SBT_MAX;
+    else
+        to_sbt += sbt;
+
+    *sbt_out = to_sbt;
+    *precision_out = precision;
+}
+
+/*
+ * Convert what callout_reset_sbt_on() was handed into a tick delay for this
+ * stack's tick-indexed callwheel. Without the C_ABSOLUTE case an absolute
+ * deadline is divided by tick_sbt as though it were a duration, scheduling
+ * the callout roughly uptime-in-ticks away, which is to say never.
+ */
+int ff_callout_delay_ticks(sbintime_t sbt, int flags);
+int ff_callout_delay_ticks(sbintime_t sbt, int flags)
+{
+    sbintime_t now;
+
+    if ((flags & C_ABSOLUTE) == 0)
+        return ((int)(sbt / tick_sbt));
+
+    if (sbt == SBT_MAX)
+        return (INT_MAX);       /* "never", as the caller meant it */
+    now = sbinuptime();
+    if (sbt <= now)
+        return (1);             /* already due: next tick */
+    return ((int)((sbt - now) / tick_sbt) + 1);
 }
 
 vm_paddr_t dump_avail[16] = {0};
