@@ -22,6 +22,7 @@
 #include <string.h>
 #include <time.h>
 #include <netinet/in.h>
+#include <sys/ioctl.h>
 #include <sys/types.h>
 
 #include "ff_api.h"
