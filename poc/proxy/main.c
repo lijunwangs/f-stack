@@ -8,7 +8,8 @@
  *   POC_PATTERN      literal the scan looks for   (default "SECRET-CANARY")
  *   POC_CA_OUT       write the POC CA here as PEM (default poc_ca.pem)
  *   POC_STATS_SEC    stats interval in seconds    (default 5)
- *   POC_RELAY_BUDGET bytes one leg moves per visit  (default 65536)
+ *   POC_RELAY_BUDGET bytes one leg moves per visit  (default 262144)
+ *   POC_LOOP_BUDGET  bytes the loop moves per pass  (default 262144)
  */
 
 #include <arpa/inet.h>
@@ -159,6 +160,7 @@ static int loop(void *arg)
 
     /* Don't wait on the network when a transfer is mid-flight and already
      * owed another turn; just collect whatever is ready and get back to it. */
+    loop_moved = 0;         /* the stack gets the thread back within a budget */
     PROF_V(P_EVWAIT, n, ev_wait(kq, events, MAX_EVENTS,
                                 session_pending() ? 0 : 1000));
     if (n > 0)
@@ -274,6 +276,7 @@ int main(int argc, char *argv[])
      * and where that line falls is what we are measuring.
      */
     relay_budget = (size_t)env_int("POC_RELAY_BUDGET", RELAY_BUDGET_DEFAULT);
+    loop_budget = (size_t)env_int("POC_LOOP_BUDGET", LOOP_BUDGET_DEFAULT);
 
     /*
      * A proxy writes into sockets the peer may have just closed, which is

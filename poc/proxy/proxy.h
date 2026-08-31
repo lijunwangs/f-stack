@@ -34,6 +34,18 @@
  * 297 MB/s on this stack wrote up to a megabyte per call.
  */
 #define OUTQ_BUF_SZ     65536
+/*
+ * Bytes the whole loop may move before returning to the stack, as opposed to
+ * RELAY_BUDGET which bounds one leg. With many sessions the per-leg bound is
+ * no bound at all: thirty-two of them at 256 KB each is 8 MB of crypto in one
+ * pass, milliseconds in which the receive ring is not polled. The ring is 2048
+ * descriptors and a burst from the origin arrives at several hundred thousand
+ * packets a second, so it overflows, and imissed climbing with load is what
+ * that looks like from outside.
+ */
+#define LOOP_BUDGET_DEFAULT (256 * 1024)
+extern size_t loop_budget;      /* POC_LOOP_BUDGET */
+extern size_t loop_moved;       /* reset each pass by the event loop */
 extern size_t relay_budget;     /* set once at startup from POC_RELAY_BUDGET */
 #define MAX_SNI_LEN     256
 

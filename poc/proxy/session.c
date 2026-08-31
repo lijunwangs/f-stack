@@ -38,6 +38,8 @@ static const char *st_name[] = { "CH", "OCONNECT", "OHS", "CHS", "RELAY",
                                  "DEAD" };
 
 size_t relay_budget = RELAY_BUDGET_DEFAULT;
+size_t loop_budget = LOOP_BUDGET_DEFAULT;
+size_t loop_moved;
 
 static struct session *by_fd[POC_MAX_FD];
 static struct poc_stats stats;
@@ -462,7 +464,8 @@ static int relay_one(struct session *s, SSL *from, int from_fd, BIO *from_rbio,
             if (rc == 1)
                 return 0;       /* congested; the write event resumes us */
             moved += (size_t)n;
-            if (moved >= relay_budget)
+            loop_moved += (size_t)n;
+            if (moved >= relay_budget || loop_moved >= loop_budget)
                 return 2;       /* yield to the stack, finish next visit */
             continue;
         }
