@@ -425,6 +425,7 @@ static int relay_one(struct session *s, SSL *from, int from_fd, BIO *from_rbio,
                     return -1;  /* memory BIO: only a real error lands here */
                 off += w;
             }
+            s->moved += (unsigned long)n;
             rc = pump_out(s, to_fd, to_wbio, to_q);
             if (rc < 0)
                 return -1;
@@ -567,6 +568,36 @@ static void relay_pump(struct session *s)
 }
 
 int session_pending(void) { return pending_n; }
+
+void session_report_stalled(void)
+{
+    int fd, shown = 0;
+
+    for (fd = 0; fd < POC_MAX_FD && shown < 4; fd++) {
+        struct session *s = by_fd[fd];
+
+        if (!s || s->cfd != fd || s->state != ST_RELAY)
+            continue;           /* one entry per session, live relays only */
+        if (s->moved != s->moved_seen) {
+            s->moved_seen = s->moved;
+            s->stalls = 0;
+            continue;
+        }
+        /* One quiet interval is an idle keep-alive, not a stall. */
+        if (++s->stalls < 2)
+            continue;
+        shown++;
+        fprintf(stderr,
+                "[poc] stalled cfd=%d ofd=%d for=%d checks | cmask=%d omask=%d"
+                " | cq=%zu/%zu oq=%zu/%zu | cbio=%d obio=%d"
+                " | pending=%d closing=%d\n",
+                s->cfd, s->ofd, s->stalls, s->cmask, s->omask,
+                s->cq.off, s->cq.len, s->oq.off, s->oq.len,
+                s->cwbio ? BIO_pending(s->cwbio) : -1,
+                s->owbio ? BIO_pending(s->owbio) : -1,
+                s->in_pending, s->closing);
+    }
+}
 
 void session_run_pending(void)
 {

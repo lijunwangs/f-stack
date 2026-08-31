@@ -35,6 +35,9 @@ struct session {
     int cmask, omask;           /* event interest currently registered */
     int closing;                /* stream ended; close once output drains */
     int in_pending;             /* queued for another relay visit */
+    unsigned long moved;        /* plaintext bytes relayed, for stall detection */
+    unsigned long moved_seen;   /* value at the last stall check */
+    int stalls;                 /* consecutive checks with no progress */
 
     uint8_t ch[CH_BUF_MAX];     /* buffered ClientHello, replayed later */
     size_t ch_len;
@@ -75,5 +78,13 @@ int pump_in_raw(struct session *s);
 void session_run_pending(void);
 /* Non-zero when a session is waiting for another visit. */
 int session_pending(void);
+/*
+ * Name any session that is in RELAY and has moved nothing for two checks,
+ * dumping the state that decides whether it can ever wake: what each leg is
+ * registered for, what is still queued, and what the write BIOs still hold.
+ * A session waiting on a wakeup that will not come looks exactly like an idle
+ * one from outside, and this is the difference.
+ */
+void session_report_stalled(void);
 
 #endif /* POC_SESSION_H */

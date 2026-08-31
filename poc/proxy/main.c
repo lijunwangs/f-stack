@@ -85,6 +85,7 @@ static void print_stats(void)
            mints, hits, sbytes / 1024, shits, s->tx_block, s->tx_nobufs,
            wire);
     fflush(stdout);
+    session_report_stalled();
 }
 
 static int loop(void *arg)
