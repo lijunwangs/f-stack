@@ -20,6 +20,7 @@
 #include <openssl/ssl.h>
 
 #include "net.h"
+#include "prof.h"
 #include "session.h"
 
 #include "proxy.h"
@@ -163,17 +164,29 @@ static void update_interest(struct session *s)
         return;
     }
 
-    if (cm != s->cmask && ev_set(s->kq, s->cfd, cm) == 0)
-        s->cmask = cm;
-    if (s->ofd >= 0 && om != s->omask && ev_set(s->kq, s->ofd, om) == 0)
-        s->omask = om;
+    if (cm != s->cmask) {
+        int rc;
+
+        PROF_V(P_EVSET, rc, ev_set(s->kq, s->cfd, cm));
+        if (rc == 0)
+            s->cmask = cm;
+    }
+    if (s->ofd >= 0 && om != s->omask) {
+        int rc;
+
+        PROF_V(P_EVSET, rc, ev_set(s->kq, s->ofd, om));
+        if (rc == 0)
+            s->omask = om;
+    }
 }
 
 /* Push the queued chunk out. 0 = emptied, 1 = socket full, -1 = error. */
 static int flush_q(int fd, struct outq *q)
 {
     while (q->off < q->len) {
-        ssize_t w = net_write(fd, q->buf + q->off, q->len - q->off);
+        ssize_t w;
+
+        PROF_V(P_SOCKWR, w, net_write(fd, q->buf + q->off, q->len - q->off));
 
         if (w > 0) {
             q->off += (size_t)w;
@@ -255,8 +268,9 @@ static int out_pending(struct session *s)
 static int pump_in(int fd, BIO *rbio)
 {
     char buf[RELAY_BUF_SZ];
-    ssize_t n = net_read(fd, buf, sizeof(buf));
+    ssize_t n;
 
+    PROF_V(P_SOCKRD, n, net_read(fd, buf, sizeof(buf)));
     if (n > 0) {
         BIO_write(rbio, buf, (int)n);
         stats.rx_bytes += (unsigned long)n;
@@ -414,12 +428,17 @@ static int relay_one(struct session *s, SSL *from, int from_fd, BIO *from_rbio,
         if (to_q->off < to_q->len)
             return 0;
 
-        n = SSL_read(from, buf, sizeof(buf));
+        PROF_V(P_SSLRD, n, SSL_read(from, buf, sizeof(buf)));
         if (n > 0) {
-            if (scan_buf(buf, (size_t)n))
+            int hit;
+
+            PROF_V(P_SCAN, hit, scan_buf(buf, (size_t)n));
+            if (hit)
                 return -2;      /* POC: drop the session on a match */
             while (off < n) {
-                int w = SSL_write(to, buf + off, n - off);
+                int w;
+
+                PROF_V(P_SSLWR, w, SSL_write(to, buf + off, n - off));
 
                 if (w <= 0)
                     return -1;  /* memory BIO: only a real error lands here */
@@ -683,7 +702,7 @@ void session_event(struct session *s, int fd, int filter)
             fail(s, "origin closed during handshake");
             return;
         }
-        rc = SSL_do_handshake(s->ossl);
+        PROF_V(P_HANDSHAKE, rc, SSL_do_handshake(s->ossl));
         if (pump_out(s, s->ofd, s->owbio, &s->oq) < 0) {
             fail(s, "origin write");
             return;
@@ -695,7 +714,7 @@ void session_event(struct session *s, int fd, int filter)
                 return;
             }
             /* Drive the client handshake with the replayed ClientHello. */
-            rc = SSL_do_handshake(s->cssl);
+            PROF_V(P_HANDSHAKE, rc, SSL_do_handshake(s->cssl));
             if (pump_out(s, s->cfd, s->cwbio, &s->cq) < 0) {
                 fail(s, "client write");
                 return;
@@ -721,7 +740,7 @@ void session_event(struct session *s, int fd, int filter)
             fail(s, "client closed during handshake");
             return;
         }
-        rc = SSL_do_handshake(s->cssl);
+        PROF_V(P_HANDSHAKE, rc, SSL_do_handshake(s->cssl));
         if (pump_out(s, s->cfd, s->cwbio, &s->cq) < 0) {
             fail(s, "client write");
             return;

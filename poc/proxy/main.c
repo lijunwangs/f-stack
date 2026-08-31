@@ -26,9 +26,36 @@
 #include <openssl/ssl.h>
 
 #include "net.h"
+#include "prof.h"
 #include "session.h"
 
 #define MAX_EVENTS NET_MAX_EVENTS
+
+uint64_t prof_cyc[P_N];
+uint64_t prof_cnt[P_N];
+const char *prof_name[P_N] = {
+    "evwait", "evset", "sockrd", "sockwr",
+    "sslrd", "sslwr", "scan", "hshake"
+};
+static uint64_t prof_mark;
+
+void prof_report(char *out, size_t len, uint64_t interval_cycles)
+{
+    size_t used = 0;
+    int i;
+
+    if (interval_cycles == 0)
+        return;
+    for (i = 0; i < P_N && used + 24 < len; i++) {
+        double pct = 100.0 * (double)prof_cyc[i] / (double)interval_cycles;
+
+        used += (size_t)snprintf(out + used, len - used, " %s=%.1f%%/%lu",
+                                 prof_name[i], pct,
+                                 (unsigned long)prof_cnt[i]);
+        prof_cyc[i] = 0;
+        prof_cnt[i] = 0;
+    }
+}
 
 static int listen_fd = -1;
 static int kq = -1;
@@ -84,6 +111,16 @@ static void print_stats(void)
            s->rx_bytes / 1024, s->tx_bytes / 1024,
            mints, hits, sbytes / 1024, shits, s->tx_block, s->tx_nobufs,
            wire);
+    {
+        char prof[512];
+        uint64_t now = prof_tsc();
+
+        prof[0] = '\0';
+        prof_report(prof, sizeof(prof), now - prof_mark);
+        prof_mark = now;
+        if (prof[0])
+            printf("[poc] cpu:%s\n", prof);
+    }
     fflush(stdout);
     session_report_stalled();
 }
@@ -95,7 +132,8 @@ static int loop(void *arg)
 
     /* Don't wait on the network when a transfer is mid-flight and already
      * owed another turn; just collect whatever is ready and get back to it. */
-    n = ev_wait(kq, events, MAX_EVENTS, session_pending() ? 0 : 1000);
+    PROF_V(P_EVWAIT, n, ev_wait(kq, events, MAX_EVENTS,
+                                session_pending() ? 0 : 1000));
     if (n < 0) {
         fprintf(stderr, "[poc] ev_wait: %s\n", strerror(errno));
         return -1;
@@ -242,6 +280,7 @@ int main(int argc, char *argv[])
            ca_out && *ca_out ? ca_out : "poc_ca.pem");
     fflush(stdout);
     last_stats = time(NULL);
+    prof_mark = prof_tsc();
 
     net_run(loop, NULL);
     forge_fini();
