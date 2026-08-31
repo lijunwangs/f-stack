@@ -238,16 +238,14 @@ static int pump_out(struct session *s, int fd, BIO *wbio, struct outq *q)
     if (rc >= 0)
         update_interest(s);
     /*
-     * A congested leg puts itself back on the resume queue instead of waiting
-     * to be told the socket drained. Relying on that notification deadlocked:
-     * the relay would hand back one full response, mute the leg it could not
-     * feed, and then sit forever because the write readiness it was waiting
-     * for never arrived. Only nginx timing the idle connection out sixty
-     * seconds later broke the cycle. Re-queueing costs a revisit that finds
-     * nothing to do; the deadlock cost the whole session.
+     * A congested leg waits for write readiness rather than being retried.
+     * That wait once deadlocked, which is why it was replaced by a re-queue,
+     * but the cause was the stack: with TCP timers stubbed out the send buffer
+     * could never drain, so there was genuinely nothing to report and waiting
+     * was correct. Retrying instead cost nine million socket writes in two
+     * seconds, a quarter of the core, to move six thousand chunks. With the
+     * timers fixed the buffer drains and the notification arrives.
      */
-    if (rc == 1)
-        mark_pending(s);
     return rc;
 }
 
