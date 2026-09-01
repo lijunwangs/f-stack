@@ -23,9 +23,12 @@ application code (only the platform layer differs).
 
 | concurrency | proxy on F-Stack | proxy on kernel |
 |---|---|---|
-| 1 | 18–24 MB/s | 37 MB/s |
-| 8 | 39–47 MB/s | 375–419 MB/s |
-| 32 | 322–352 MB/s | 412–470 MB/s |
+| 1 | **38.2 MB/s** | 36.9 MB/s |
+| 8 | **336–342 MB/s** | 375–419 MB/s |
+| 32 | **323–326 MB/s** | 412–470 MB/s |
+
+(F-Stack figures with `tso=0`; see 2.3. With TSO enabled they were 15.8, 39.2
+and 116.8 respectively, and wildly unstable.)
 
 And the calibration that puts those in context — each stack's *own* reference
 server, one core, `sendfile off` on both so it is the stack being compared:
@@ -246,7 +249,64 @@ Eliminated so far:
 | response larger than the send buffer | raising `sendspace` to 2 MB (verified applied) does not help |
 | loss or retransmission | neither appears in the capture |
 
-#### Root cause: acknowledgements arrive and are not applied
+#### Root cause: TSO on this NIC silently loses segments
+
+**`tso=0` fixes it.** Six 1 MB keep-alive requests, and a single-connection
+throughput run, changing nothing else:
+
+```
+tso=1   0.242, 0.511, 0.514, 0.279, 0.513, 0.511 s     wrk c=1:   3.90 MB/s
+tso=0   0.015, 0.006, 0.002, 0.002, 0.002, 0.002 s     wrk c=1: 348.75 MB/s
+```
+
+89x on a one-line config change, and every stall gone.
+
+The mechanism fits everything observed. With TSO the stack hands the port one
+large super-segment and advances `snd_max` across all of it. The port fails to
+transmit some of what it was given, so those bytes never reach the peer and
+cannot be acknowledged. `snd_una` therefore stops, the congestion window stays
+full at exactly the bytes in flight, `tcp_output` computes a sub-MSS length and
+declines, and the connection moves only when the retransmit timer fires. By
+then the data really has been acknowledged, so the "retransmission" carries new
+data -- which is why the capture shows the sender resuming at the exact next
+byte with nothing resent.
+
+It also explains why the transmit-drop counter read zero: the loss is inside
+the port's segmentation, past the point where `rte_eth_tx_burst` reports
+anything. And why small objects were unaffected: they fit in one congestion
+window and never depend on the ack clock.
+
+**This one was partly self-inflicted and should be recorded as such.** F-Stack
+defaults `tso` to 0. It was set to 1 during an earlier offload experiment in
+this same investigation and never put back, so every measurement after that
+point carried it. The stalls seen *before* that change were the timer bug in
+2.1, not this.
+
+#### Effect on the proxy
+
+| concurrency | tso=1 | tso=0 | kernel |
+|---|---|---|---|
+| 1 | 15.8 MB/s | **38.2** | 36.9 |
+| 8 | 39.2 | **340.9** | 375-419 |
+| 32 | 116.8 | **323.6** | 412-470 |
+
+Repeat runs with `tso=0`: c=8 gives 336.95, 338.27, 341.85, 341.11 MB/s
+(+/-0.7%); c=32 gives 323.44, 325.30, 325.84, 326.49 (+/-0.5%). A 1 MB
+transfer arrives whole and the canary is still blocked.
+
+So on one core the proxy is now **at parity at a single connection** (38.2
+against the kernel's 36.9) and at **81-91% at eight**, with run-to-run spread
+under one percent. That is the comparison the POC set out to make, and it is
+finally a measurement rather than noise.
+
+Two notes on what remains. Throughput now peaks at eight connections rather
+than rising to thirty-two, which inverts the earlier reading in section 4 --
+that section's numbers were all taken with TSO on and its interpretation
+should be treated as superseded. And `imissed` still climbs under load
+(89,789 in the run above) with `failed=157` of 435 sessions, so the receive
+ring and session failures are still worth chasing.
+
+#### Earlier hypothesis: acknowledgements arrive and are not applied
 
 Correlating the retransmit-timer state inside the stack against the wire, on
 the same connection at the same moment:
