@@ -1868,10 +1868,45 @@ static void
 ff_veth_input(struct ff_dpdk_if_context *ctx, struct rte_mbuf *pkt)
 {
     uint8_t rx_csum = ctx->hw_features.rx_csum;
+
+    /*
+     * Decide whether the port's verdict on this packet can be trusted, and
+     * never discard a packet on the strength of that verdict alone.
+     *
+     * This used to free any packet whose offload flags reported a bad
+     * checksum, with no counter and no log, so a port that misreports leaves
+     * no trace anywhere: not imissed, not ierrors, not ff_traffic, not
+     * tcps_rcvbadsum. Acknowledgements were seen on the wire while snd_una
+     * stood still, the congestion window stayed full, and the connection
+     * moved only when the retransmit timer fired -- a stalled ack clock whose
+     * cause was invisible from every statistic the stack keeps.
+     *
+     * It also trusted the flags in the other direction, marking every
+     * surviving packet checksum-valid so the stack skipped verification, even
+     * when the port had not actually checked it.
+     *
+     * So: trust GOOD, and for BAD or UNKNOWN hand the packet up with the
+     * verification left to the stack, which is cheap next to losing a
+     * connection's ack clock. A genuinely corrupt packet is then dropped by
+     * tcp_input and counted in tcps_rcvbadsum where it belongs.
+     */
     if (rx_csum) {
-        if (pkt->ol_flags & (RTE_MBUF_F_RX_IP_CKSUM_BAD | RTE_MBUF_F_RX_L4_CKSUM_BAD)) {
-            rte_pktmbuf_free(pkt);
-            return;
+        uint64_t ipc = pkt->ol_flags & RTE_MBUF_F_RX_IP_CKSUM_MASK;
+        uint64_t l4c = pkt->ol_flags & RTE_MBUF_F_RX_L4_CKSUM_MASK;
+
+        if (ipc == RTE_MBUF_F_RX_IP_CKSUM_BAD ||
+            l4c == RTE_MBUF_F_RX_L4_CKSUM_BAD) {
+            static uint64_t bad_verdicts;
+
+            if ((bad_verdicts++ % 1000) == 0)
+                ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
+                    "port reported %lu bad checksums; verifying in software "
+                    "rather than dropping\n", (unsigned long)bad_verdicts);
+            rx_csum = 0;
+        } else if (ipc == RTE_MBUF_F_RX_IP_CKSUM_UNKNOWN ||
+                   l4c == RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN) {
+            /* The port did not check, so the stack must. */
+            rx_csum = 0;
         }
     }
 
