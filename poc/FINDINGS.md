@@ -140,7 +140,56 @@ the way ethdev does. LRO is then usable and worth **+16–21%** — receive queu
 depth roughly doubled (31,497 → 68,087 bytes) and average read size grew
 (11,879 → 13,875 bytes).
 
-### 2.3 The port stops receiving, permanently — NOT fixed
+### 2.3 Data arrives and the application is never woken — NOT fixed
+
+This is the root cause of the bulk deficit, and of the 548x gap at one
+connection between F-Stack nginx (2.50 MB/s) and Linux nginx (1.37 GB/s).
+
+A keep-alive sequence of three 1 MB requests, captured on the wire:
+
+```
+client requests sent:  t=308.521704, 308.525983, 308.531665   (all within 10ms)
+retransmissions:       none -- each sequence number appears exactly once
+largest gap:           231.6 ms, before a packet FROM THE SERVER
+per-request times:     4.5 ms, 5.6 ms, 281 ms
+```
+
+The client sent all three requests promptly and never retransmitted, so the
+third was received. The server then sat on it for 231.6 ms. F-Stack's
+retransmit timeout on these connections is `rxtcur=230` ticks, so the response
+was not triggered by the arriving request at all -- it was triggered 230 ms
+later by the stack's own retransmit timer happening to run the input path.
+
+Three independent measurements agree:
+
+- **Wakeups arrive at about 1000 per second per connection**, which is exactly
+  `hz=1000`. The application is being scheduled by the clock, not by data.
+- **A new connection is fast, a reused one is slow.** Twelve fresh connections
+  fetched 1 MB in 2.9-4.4 ms each, about 340 MB/s. The same fetch on an
+  already-open connection takes hundreds of milliseconds.
+- **Level-triggered readiness works around it; edge-triggered does not.** Our
+  proxy re-evaluates the filter on every kevent scan and is ~10x faster than
+  F-Stack's own nginx on the same stack. nginx registers with `EV_CLEAR` and
+  depends on the activation that never comes.
+
+`kqueue_register` itself is correct -- it re-evaluates the filter after `EV_ADD`
+at `done_ev_add` -- so the fault is upstream of kqueue, in whatever should
+activate the knote when the socket receives data.
+
+**Why F-Stack's published numbers do not show this.** Its benchmarks are all
+small objects, where a request and its response need one or two wakeups. The
+cost of a missed wakeup is bounded by a timer tick, so the damage is small and
+constant. A 1 MB transfer needs hundreds of wakeups, and each one that is
+missed costs up to a retransmit timeout. The defect is invisible at 3.7 KB and
+ruinous at 1 MB.
+
+This also retracts an earlier conclusion recorded in section 4: the
+"asynchrony" explanation -- that a run-to-completion loop drains too eagerly to
+accumulate a batch -- described a real effect but was not the main cause. The
+main cause is missed wakeups. Section 4's measurements stand; its
+interpretation is superseded by this one.
+
+### 2.4 The port stops receiving, permanently — NOT fixed
 
 Seen twice, once under the reference server and once under the proxy.
 `rte_eth_rx_burst` returns nothing for as long as the process lives:
@@ -313,18 +362,21 @@ mode with an overlap window would be the cheaper choice.
 
 ## 8. Open questions
 
-1. **The port RX death (§2.3).** Unrecoverable in production. Highest priority.
-2. **Is the bulk deficit F-Stack, or vmxnet3-in-a-VM?** The environment charges
+1. **Missed wakeups on data arrival (§2.3).** The root cause of the bulk
+   deficit. Find what should activate the socket's knote on receive and does
+   not. Highest priority, and the most likely single fix to close the gap.
+2. **The port RX death (§2.4).** Unrecoverable in production.
+3. **Is any of the residual deficit vmxnet3-in-a-VM?** The environment charges
    a doorbell-per-transmit VM exit, offers no working hardware offloads and
    runs under `uio_pci_generic` without MSI-X. F-Stack's own nginx being 21×
    behind Linux points at the environment as much as the stack. A real NIC
    settles it, and the target is a 100G NIC anyway.
-3. **Scaling across cores** — F-Stack's actual design point and the source of
+4. **Scaling across cores** — F-Stack's actual design point and the source of
    all its published numbers. Entirely untested here; a 25% per-core deficit
    matters much less if scale-out is linear.
-4. **Jumbo frames.** 6× fewer packets, larger reads per arrival, helps exactly
+5. **Jumbo frames.** 6× fewer packets, larger reads per arrival, helps exactly
    the metric we are short on. Cheap, untested.
-5. **Pipeline split** — dedicated RX cores feeding workers over rings, which
+6. **Pipeline split** — dedicated RX cores feeding workers over rings, which
    attacks the asynchrony in §4 rather than working around it. Real work, and
    not native to F-Stack's shared-nothing model.
 
