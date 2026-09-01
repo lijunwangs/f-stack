@@ -203,8 +203,54 @@ conflated:
   lost wakeups.
 
 The remaining question for the proxy is therefore why arrivals are limited to
-~2,456/s rather than why wakeups are missed. For nginx the question is still
-what defers its wakeup to a timer.
+~2,456/s rather than why wakeups are missed.
+
+#### Narrowing the nginx stall
+
+The stall is a write-resume stall, and it is sharply size-dependent. Six
+keep-alive requests per object, times in milliseconds:
+
+| object | request times |
+|---|---|
+| 16 KB | 0.7, 0.2, 0.2, 0.2, 0.2, 0.2 |
+| 64 KB | 0.6, 0.3, 0.3, 0.2, 0.2, 0.2 |
+| 256 KB | 1.3, 0.8, 0.6, 0.7, 0.8, 0.7 |
+| 1024 KB | 3.6, 5.0, **280**, **510**, **279**, **513** |
+
+The first two requests on a connection are always fast; the stall begins with
+the third. The threshold lies between 256 KB and 1 MB.
+
+The wire during a stall is unambiguous, and rules out the network entirely:
+
+```
++  0.063ms  client -> ack 3066067          (all data acked, window 1.5 MB open)
++232.141ms  server -> seq 3066067:3067515  (resumes at the exact next byte)
++  0.036ms  client -> ack 3067515
++  0.070ms  server -> seq 3067515:3070411  (full speed again)
+```
+
+No loss, and **no retransmission** -- the server resumes at exactly where it
+stopped, so this is not recovery. Nothing is in flight, so the congestion
+window cannot be the limit, which means `tcp_output` found the send buffer
+empty: the application had not written more. 232 ms is one RTO.
+
+Eliminated so far:
+
+| candidate | evidence against |
+|---|---|
+| knote notifications dropped in flux | `knote total=200 influx_dropped=0 activated=194 event_false=5` |
+| kqueue not re-evaluating on `EV_ADD` | it does, at `done_ev_add` |
+| `sowakeup` / `knote` / `selwakeuppri` stubbed | none of them are |
+| kevent blocking on the app's timeout | `ff_kevent_do_each` discards the caller's timeout and always polls |
+| `_sleep` returning EPERM to the app | never reached, since the timeout is forced to zero |
+| response larger than the send buffer | raising `sendspace` to 2 MB (verified applied) does not help |
+| loss or retransmission | neither appears in the capture |
+
+What remains is the path between the send buffer draining and the application
+being told it may write again, for a response large enough to need more than
+one write. `sowwakeup_locked` only calls `sowakeup` when `sb_notify()` is
+true, which for kqueue means `SB_KNOTE` on the **send** buffer, so that flag's
+lifetime across nginx's register/deregister cycle is the next thing to check.
 
 **Why F-Stack's published numbers do not show this.** Its benchmarks are all
 small objects, where a request and its response need one or two wakeups. The
