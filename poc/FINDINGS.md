@@ -24,12 +24,13 @@ application code (only the platform layer differs).
 | concurrency | proxy on F-Stack | proxy on kernel |
 |---|---|---|
 | 1 | **55–69 MB/s** | 36.9 MB/s |
-| 8 | **374–376 MB/s** | 375–419 MB/s |
-| 32 | **356 MB/s** | 412–470 MB/s |
+| 8 | **427–436 MB/s** | 375–419 MB/s |
+| 32 | **400–403 MB/s** | 412–470 MB/s |
 
-F-Stack figures with TSO enabled and the segment-limit fix in 2.3. Before that
-fix they were 15.8, 39.2 and 116.8, and wildly unstable. **F-Stack beats the
-kernel at one connection and matches it at eight.**
+F-Stack figures with `tso=1 lro=1`, which requires the segment-limit fix in 2.3
+and the LRO sizing fix in 2.2. Before those it was 15.8, 39.2 and 116.8, and
+wildly unstable. **F-Stack now beats the kernel at one and eight connections
+and is within about 3% at thirty-two.**
 
 And the calibration that puts those in context — each stack's *own* reference
 server, one core, `sendfile off` on both so it is the stack being compared:
@@ -311,8 +312,47 @@ is still blocked, and `drop_too_many_segs` is zero.
 against 36.9) and matches it at eight (375 against 375-419).** That is the
 comparison the POC existed to make.
 
-One caveat remains: thirty-two connections still trail (356 against 412-470),
-which is an ordinary performance question rather than a symptom.
+#### Closing the concurrency gap: enable LRO
+
+With TSO fixed, receive coalescing is worth revisiting, and it is the second
+largest single gain found:
+
+| | c=8 | c=32 |
+|---|---|---|
+| `lro=0` | 381.1 MB/s | 359.0 |
+| **`lro=1`** | **427-436** | **400-403** |
+| kernel | 375-419 | 412-470 |
+
+Repeat runs with `lro=1`: c=8 gives 427.07, 430.71, 431.88, 436.28 (+/-1%);
+c=32 gives 403.04, 400.66, 400.74, 399.67 (+/-0.4%). A 1 MB transfer arrives
+whole and the canary is still blocked.
+
+**So the recommended configuration is `tso=1 lro=1`**, which needs both the
+segment-limit fix above and the LRO sizing fix in 2.2 to work at all. On one
+core that puts the proxy ahead of the kernel at one and eight connections and
+within about 3% at thirty-two.
+
+What did **not** help, each measured rather than assumed:
+
+| lever | result |
+|---|---|
+| receive ring 2048 to 4096 (PMD max) | nothing: c=32 went 352.9 to 348.0 |
+| `MAX_PKT_BURST` 32 to 64 | loss 0.70% to 0.59%, throughput unchanged |
+| receive buffer 256 KB down to 16 KB | 349 to 354, within noise |
+| mbuf pool pressure | never a factor: 11,500 of 16,384 free throughout |
+
+The drops are real and rise with concurrency (0.23% at c=8, 0.74% at c=32,
+`pktsRxOutOfBuf` from the device) but they are a symptom rather than the
+limit: ring depth and buffer supply were both ruled out, and the profile shows
+app work at only ~30% of the core at 368 MB/s, so what remains is F-Stack's
+per-packet cost in the stack. That is exactly what LRO reduces, which is why
+it helped and the buffer tuning did not.
+
+Jumbo frames are the remaining untested lever and would attack the same cost.
+Not tried here because both endpoints share the host's other interface at MTU
+1500, so raising it would mean changing the interface carrying the management
+session for a gain the origin leg could not use anyway. On the real target it
+is worth measuring.
 
 The session failures turned out to be an accounting fault, not a defect. The
 count sat flat at 1 through an entire 24 second run while 77 sessions
