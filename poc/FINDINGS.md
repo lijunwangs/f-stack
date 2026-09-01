@@ -246,11 +246,51 @@ Eliminated so far:
 | response larger than the send buffer | raising `sendspace` to 2 MB (verified applied) does not help |
 | loss or retransmission | neither appears in the capture |
 
-What remains is the path between the send buffer draining and the application
-being told it may write again, for a response large enough to need more than
-one write. `sowwakeup_locked` only calls `sowakeup` when `sb_notify()` is
-true, which for kqueue means `SB_KNOTE` on the **send** buffer, so that flag's
-lifetime across nginx's register/deregister cycle is the next thing to check.
+#### Root cause: acknowledgements arrive and are not applied
+
+Correlating the retransmit-timer state inside the stack against the wire, on
+the same connection at the same moment:
+
+```
+at RTO:        una=1600418049  max=1600467281   (49,232 bytes outstanding)
+server sent:   1600418049 -> 1600439769 -> ... -> 1600467281
+client ACKed:  1600418049, 1600419497, 1600422393, 1600426737,
+               1600432529, 1600439769, ...
+```
+
+The client acknowledged every segment, contiguously, hundreds of milliseconds
+before the timer fired -- and `snd_una` was still sitting at the first of
+them. **The acknowledgements reach the wire and do not advance the sender's
+window.** With `snd_una` frozen, `cwnd` stays full (measured `cwnd=49232`
+against `inflight=49232`), `tcp_output` computes `len=290`, declines to send
+a sub-MSS segment, and the connection makes progress only when the retransmit
+timer fires 230 ms later. Because everything really was acknowledged by then,
+that "retransmission" transmits new data, which is why the wire shows the
+sender resuming at the exact next byte with nothing resent.
+
+This is a **stalled ack clock**, and it explains the whole shape of the
+nginx numbers: small objects finish inside one congestion window and never
+need the clock, which is why 16, 64 and 256 KB are fast and 1 MB is not, and
+why F-Stack's own small-object benchmarks never expose it.
+
+Eliminated as the cause, each by measurement:
+
+| candidate | evidence against |
+|---|---|
+| knote notifications dropped in flux | `total=200 influx_dropped=0 activated=194` |
+| kqueue not re-evaluating on `EV_ADD` | it does, at `done_ev_add` |
+| `sowakeup` / `knote` / `selwakeuppri` stubbed | none are |
+| kevent blocking on the app's timeout | `ff_kevent_do_each` discards it and always polls |
+| `_sleep` returning EPERM to the app | never reached; timeout forced to zero |
+| waiting on write readiness | nginx never registers `EVFILT_WRITE`: `knote_on=0`, `sbflags=0x840` with no `SB_KNOTE`, every send-side wakeup declined |
+| response larger than the send buffer | `sendspace=2 MB` (verified applied) does not help |
+| LRO mangling the ack stream | stalls and RTOs identical with `lro=0` (10 RTOs vs 9) |
+| packets silently dropped on transmit | zero `TX DROP` events; `rte_eth_tx_burst` accepts everything |
+
+What is left is the inbound path between the port and `tcp_input`'s ack
+processing: either the acknowledgements are dropped before the stack sees
+them, or they are seen and discarded. Counting received packets at the port
+against acks applied would separate those two, and is the next step.
 
 **Why F-Stack's published numbers do not show this.** Its benchmarks are all
 small objects, where a request and its response need one or two wakeups. The
