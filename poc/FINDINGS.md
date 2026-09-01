@@ -311,9 +311,30 @@ is still blocked, and `drop_too_many_segs` is zero.
 against 36.9) and matches it at eight (375 against 375-419).** That is the
 comparison the POC existed to make.
 
-Two caveats worth keeping. Thirty-two connections still trail (356 against
-412-470), and `failed=67` of 308 sessions is unexplained. Both are ordinary
-performance questions now rather than symptoms of a broken stack.
+One caveat remains: thirty-two connections still trail (356 against 412-470),
+which is an ordinary performance question rather than a symptom.
+
+The session failures turned out to be an accounting fault, not a defect. The
+count sat flat at 1 through an entire 24 second run while 77 sessions
+completed, then jumped the moment the load generator exited and closed its
+connections abortively. ECONNRESET and EPIPE are now counted as resets rather
+than failures, which is what they are, and the accounting reads cleanly:
+
+```
+sessions=126  done=101  failed=3  blocked=0  resets=14
+```
+
+The three remaining are connections accepted and closed before any ClientHello
+arrived -- also generator teardown.
+
+A second fault was hiding underneath. `relay_one` refills from its source
+internally, so a failure *reading the source* was reported against the
+*destination*: a client that vanished mid-transfer was logged as "relay to
+origin". That label sent one branch of this investigation at the origin leg for
+no reason. It now returns a distinct code for a source-side error and the
+caller names the leg that actually failed. Both worth remembering as a class:
+**a mislabelled error is worse than no error**, and a counter that lumps a
+peer's abort together with your own bug will hide the bug.
 
 #### How this was found, since none of the earlier reasoning reached it
 
