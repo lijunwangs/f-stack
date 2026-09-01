@@ -23,12 +23,13 @@ application code (only the platform layer differs).
 
 | concurrency | proxy on F-Stack | proxy on kernel |
 |---|---|---|
-| 1 | **38.2 MB/s** | 36.9 MB/s |
-| 8 | **336–342 MB/s** | 375–419 MB/s |
-| 32 | **323–326 MB/s** | 412–470 MB/s |
+| 1 | **55–69 MB/s** | 36.9 MB/s |
+| 8 | **374–376 MB/s** | 375–419 MB/s |
+| 32 | **356 MB/s** | 412–470 MB/s |
 
-(F-Stack figures with `tso=0`; see 2.3. With TSO enabled they were 15.8, 39.2
-and 116.8 respectively, and wildly unstable.)
+F-Stack figures with TSO enabled and the segment-limit fix in 2.3. Before that
+fix they were 15.8, 39.2 and 116.8, and wildly unstable. **F-Stack beats the
+kernel at one connection and matches it at eight.**
 
 And the calibration that puts those in context — each stack's *own* reference
 server, one core, `sendfile off` on both so it is the stack being compared:
@@ -249,7 +250,85 @@ Eliminated so far:
 | response larger than the send buffer | raising `sendspace` to 2 MB (verified applied) does not help |
 | loss or retransmission | neither appears in the capture |
 
-#### Root cause: TSO on this NIC silently loses segments
+#### Root cause: the TSO segment limit was a constant — fixed
+
+`lib/ff_veth.c` told the stack how many segments the port would accept with a
+hardcoded number:
+
+```c
+if_sethwtsomaxsegcount(ifp, 35);
+```
+
+vmxnet3 accepts **16** segments per packet and **24** with TSO
+(`VMXNET3_MAX_TXD_PER_PKT`, `VMXNET3_MAX_TSO_TXD_PER_PKT`). So FreeBSD's TCP
+built chains up to 35 segments because F-Stack said it could, and the driver
+discarded every one that was too long:
+
+```
+tx_q0_drop_total=398   tx_q0_drop_too_many_segs=398
+```
+
+The discard is invisible from above, because the driver counts it as sent:
+
+```c
+txq->stats.drop_too_many_segs++;
+rte_pktmbuf_free(txm);
+nb_tx++;                /* reported to rte_eth_tx_burst as transmitted */
+```
+
+Which is why F-Stack's own transmit-drop counter read zero throughout. TCP
+advanced `snd_max` over data that never reached the wire, no acknowledgement
+could arrive for it, `snd_una` stopped, the congestion window stayed full at
+exactly the bytes in flight, `tcp_output` declined a sub-MSS segment, and the
+connection moved only when the retransmit timer fired. The rest really had
+been acknowledged by then, so that retransmission carried new data -- hence a
+capture showing the sender resume at the exact next byte with nothing resent.
+
+**Why the kernel does not have this.** Linux's vmxnet3 driver reports its real
+segment limit to the network stack, so the stack never builds a chain the
+driver must throw away. That is all the fix does: the PMD already advertises
+the limit in `dev_info.tx_desc_lim.nb_mtu_seg_max`, so `hw_features` carries
+it through and the interface reports it, falling back to the old constant only
+when a PMD declines to say.
+
+#### Result
+
+One core, 1 MB objects, and TSO **enabled**:
+
+| concurrency | broken (35 segs) | tso=0 workaround | **fixed** | kernel |
+|---|---|---|---|---|
+| 1 | 15.8 MB/s | 38.2 | **55-69** | 36.9 |
+| 8 | 39.2 | 340.9 | **374-376** | 375-419 |
+| 32 | 116.8 | 323.6 | **356** | 412-470 |
+
+Repeat runs at eight connections: 374.23, 374.29, 375.44, 375.94 MB/s, a
+spread of 0.2%. Six keep-alive requests now take 0.241, 0.058, 0.025, 0.032,
+0.028 and 0.036 s, against 0.28 to 0.51 before; the first includes the TLS
+handshake and a certificate mint. A 1 MB transfer arrives whole and the canary
+is still blocked, and `drop_too_many_segs` is zero.
+
+**So the proxy on F-Stack now beats the kernel at one connection (55-69 MB/s
+against 36.9) and matches it at eight (375 against 375-419).** That is the
+comparison the POC existed to make.
+
+Two caveats worth keeping. Thirty-two connections still trail (356 against
+412-470), and `failed=67` of 308 sessions is unexplained. Both are ordinary
+performance questions now rather than symptoms of a broken stack.
+
+#### How this was found, since none of the earlier reasoning reached it
+
+The wire said the network was healthy: everything acknowledged, window open, no
+loss, no retransmission. Every stack-level counter said the same: `imissed=0`,
+`ierrors=0`, `oerrors=0`, mbuf pool untouched, `tx_dropped` zero. Nine
+hypotheses were eliminated against that evidence, three of them wrong guesses
+of my own.
+
+What broke it open was `rte_eth_xstats_get`. The basic statistics cannot
+express "the driver threw this away", and the driver's own extended counter
+named the reason in one word. **On any DPDK problem where the packets are
+provably fine, read the extended counters early.**
+
+#### Superseded: TSO on this NIC silently loses segments
 
 **`tso=0` fixes it.** Six 1 MB keep-alive requests, and a single-connection
 throughput run, changing nothing else:
