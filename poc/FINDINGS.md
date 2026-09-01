@@ -465,7 +465,52 @@ accumulate a batch -- described a real effect but was not the main cause. The
 main cause is missed wakeups. Section 4's measurements stand; its
 interpretation is superseded by this one.
 
-### 2.4 The port stops receiving, permanently — NOT fixed
+### 2.4 The port stops receiving, permanently — not reproduced, not fixed
+
+Seen twice, once under the reference server and once under the proxy.
+`rte_eth_rx_burst` returns nothing for as long as the process lives:
+
+```
+ipkts frozen   opkts frozen   ierr=0  oerr=0
+mbuf=15361/16384 (pool healthy)   link=up/10000Mbps
+```
+
+ARP to the port fails, so peers give up. Only a process restart revives it.
+
+**Five deliberate attempts to reproduce it all failed**, on a clean
+configuration with the sensor software removed:
+
+| attempt | result |
+|---|---|
+| sustained load until `imissed` reached 113,847 -- more than twice the ~50,000 that preceded both occurrences | no stall |
+| twelve consecutive process restart cycles, checking the port each time | no stall |
+| 128 connections with 256 KB / 512 KB socket buffers, to press the mbuf pool | pool never fell below 12,143 of 16,384; `rxnombuf=0`; no stall |
+| a second DPDK primary started against the same port while the proxy ran | rejected cleanly at `Cannot init config`, original unaffected |
+| the TSO segment bug deliberately restored, so the driver discarded chains continuously (`too_many_segs` climbing past 1,400) | no stall |
+
+One reading of the earlier mbuf figure has to be retracted: `mbuf=15361/16384`
+was read *after* the port died, by which time every in-flight buffer had been
+returned, so it says nothing about the pool during the event. That is why
+attempt three was worth running, and the pool still never came close.
+
+What both occurrences had in common is the sensor software being installed and
+its services starting or stopping around the port; one happened immediately
+after `aella_flow` appeared and was killed. That software has since been
+removed, which is the most likely reason it no longer occurs — but it is a
+correlation across two events, not a diagnosis.
+
+**What was done instead.** The cause is unknown, so the defence is detection.
+Three consecutive stats intervals with no received packet trigger a one-shot
+dump of link state, queue configuration and every non-zero extended counter,
+followed by a warning on every interval for as long as it lasts, and a line
+when it recovers. A supervisor can act on that; restarting the process is the
+one thing known to cure it. Both original occurrences were noticed by accident,
+and that at least cannot happen again.
+
+**Residual risk, stated plainly.** Two occurrences in roughly two days of heavy
+use, cause unknown, recovery only by restart. For production that needs either
+a reproduction or a supervisor that restarts on the warning. It is the one open
+item that would be a hang rather than a slowdown.
 
 Seen twice, once under the reference server and once under the proxy.
 `rte_eth_rx_burst` returns nothing for as long as the process lives:
