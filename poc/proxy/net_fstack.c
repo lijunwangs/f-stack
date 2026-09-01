@@ -4,6 +4,7 @@
 #include <sys/ioctl.h>
 #include <sys/time.h>
 
+#include <stdlib.h>
 #include <string.h>
 #include <rte_ethdev.h>
 #include <rte_mempool.h>
@@ -151,6 +152,47 @@ int ev_wait(int ev, struct net_event *out, int max, int timeout_ms)
  * Port 0 and mbuf_pool_0 match a single-port, single-socket config; a wider
  * deployment would walk the port list.
  */
+/*
+ * Any non-zero extended counter whose name suggests a discard. The basic
+ * stats show imissed and ierrors only; a port that accepts a TSO request and
+ * then fails to segment it reports that here or nowhere.
+ */
+static void append_xstats(char *out, size_t len)
+{
+    struct rte_eth_xstat_name *names = NULL;
+    struct rte_eth_xstat *vals = NULL;
+    size_t used = strlen(out);
+    int n, i;
+
+    n = rte_eth_xstats_get_names(0, NULL, 0);
+    if (n <= 0)
+        return;
+    names = calloc((size_t)n, sizeof(*names));
+    vals = calloc((size_t)n, sizeof(*vals));
+    if (!names || !vals)
+        goto done;
+    if (rte_eth_xstats_get_names(0, names, (unsigned)n) != n ||
+        rte_eth_xstats_get(0, vals, (unsigned)n) != n)
+        goto done;
+
+    for (i = 0; i < n && used + 40 < len; i++) {
+        if (vals[i].value == 0)
+            continue;
+        if (!strstr(names[i].name, "drop") &&
+            !strstr(names[i].name, "error") &&
+            !strstr(names[i].name, "discard") &&
+            !strstr(names[i].name, "tso") &&
+            !strstr(names[i].name, "TSO"))
+            continue;
+        used += (size_t)snprintf(out + used, len - used, " %s=%llu",
+                                 names[i].name,
+                                 (unsigned long long)vals[i].value);
+    }
+done:
+    free(names);
+    free(vals);
+}
+
 void net_stack_stats(char *out, size_t len)
 {
     struct rte_eth_stats st;
@@ -206,6 +248,7 @@ void net_stack_stats(char *out, size_t len)
              (unsigned long long)st.imissed, (unsigned long long)st.ierrors,
              (unsigned long long)st.oerrors, (unsigned long long)st.rx_nombuf,
              avail, avail + used);
+    append_xstats(out, len);
 }
 
 int net_pending(int fd)
