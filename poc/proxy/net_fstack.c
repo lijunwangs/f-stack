@@ -153,6 +153,50 @@ int ev_wait(int ev, struct net_event *out, int max, int timeout_ms)
  * deployment would walk the port list.
  */
 /*
+ * Dump every non-zero extended counter, plus queue and link state. Called once
+ * when the port stops receiving: that failure has been seen twice, with
+ * ipkts and opkts frozen, no ierrors, no oerrors, an untouched mbuf pool and
+ * the link still reported up, recovering only on a process restart. Nothing in
+ * the ordinary counters distinguishes it from an idle link, so when it happens
+ * we want everything the driver is willing to say, once.
+ */
+static void dump_port_state(void)
+{
+    struct rte_eth_xstat_name *names = NULL;
+    struct rte_eth_xstat *vals = NULL;
+    struct rte_eth_dev_info info;
+    struct rte_eth_link link;
+    int n, i;
+
+    memset(&info, 0, sizeof(info));
+    memset(&link, 0, sizeof(link));
+    rte_eth_dev_info_get(0, &info);
+    rte_eth_link_get_nowait(0, &link);
+    fprintf(stderr, "[poc] PORT STALLED: link=%d speed=%u rxq=%u txq=%u "
+            "driver=%s\n", link.link_status, link.link_speed,
+            info.nb_rx_queues, info.nb_tx_queues,
+            info.driver_name ? info.driver_name : "?");
+
+    n = rte_eth_xstats_get_names(0, NULL, 0);
+    if (n <= 0)
+        return;
+    names = calloc((size_t)n, sizeof(*names));
+    vals = calloc((size_t)n, sizeof(*vals));
+    if (!names || !vals)
+        goto done;
+    if (rte_eth_xstats_get_names(0, names, (unsigned)n) != n ||
+        rte_eth_xstats_get(0, vals, (unsigned)n) != n)
+        goto done;
+    for (i = 0; i < n; i++)
+        if (vals[i].value != 0)
+            fprintf(stderr, "[poc]   xstat %s=%llu\n", names[i].name,
+                    (unsigned long long)vals[i].value);
+done:
+    free(names);
+    free(vals);
+}
+
+/*
  * Any non-zero extended counter whose name suggests a discard. The basic
  * stats show imissed and ierrors only; a port that accepts a TSO request and
  * then fails to segment it reports that here or nowhere.
@@ -249,6 +293,27 @@ void net_stack_stats(char *out, size_t len)
              (unsigned long long)st.oerrors, (unsigned long long)st.rx_nombuf,
              avail, avail + used);
     append_xstats(out, len);
+
+    /*
+     * Watch for the port going deaf. Three consecutive intervals with no
+     * received packet at all, while the process is clearly meant to be
+     * serving, is the signature; dump once so the log holds the evidence.
+     */
+    {
+        static unsigned long long last_ipkts;
+        static int quiet;
+        static int dumped;
+
+        if (st.ipackets == last_ipkts) {
+            if (++quiet == 3 && !dumped) {
+                dumped = 1;
+                dump_port_state();
+            }
+        } else {
+            last_ipkts = st.ipackets;
+            quiet = 0;
+        }
+    }
 }
 
 int net_pending(int fd)
