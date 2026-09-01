@@ -142,8 +142,10 @@ depth roughly doubled (31,497 → 68,087 bytes) and average read size grew
 
 ### 2.3 Data arrives and the application is never woken — NOT fixed
 
-This is the root cause of the bulk deficit, and of the 548x gap at one
-connection between F-Stack nginx (2.50 MB/s) and Linux nginx (1.37 GB/s).
+This is the root cause of the 548x gap at one connection between F-Stack
+nginx (2.50 MB/s) and Linux nginx (1.37 GB/s). It is **not** the cause of this
+proxy's deficit -- see the wakeup accounting further down, which rules that
+out.
 
 A keep-alive sequence of three 1 MB requests, captured on the wire:
 
@@ -172,9 +174,37 @@ Three independent measurements agree:
   F-Stack's own nginx on the same stack. nginx registers with `EV_CLEAR` and
   depends on the activation that never comes.
 
-`kqueue_register` itself is correct -- it re-evaluates the filter after `EV_ADD`
-at `done_ev_add` -- so the fault is upstream of kqueue, in whatever should
-activate the knote when the socket receives data.
+`kqueue_register` itself is correct -- it re-evaluates the filter after
+`EV_ADD` at `done_ev_add`. Nor is the wakeup path stubbed: `sowakeup` does
+call `KNOTE_LOCKED`, and neither `knote` nor `selwakeuppri` is a stub.
+
+**And the delivery is not lost, at least not for a level-triggered
+application.** Counting receive wakeups at their source in `sowakeup` against
+what the proxy receives from kevent, at eight connections:
+
+```
+sorwakeup:   20,000 wakeups across 8.143 s  = 2,456/s
+app events:  4,027 per 2 s interval         = 2,014/s
+```
+
+Those match. The receive path is being driven about 2,456 times a second and
+the application is told about essentially all of it, each arrival carrying
+~23 KB with LRO enabled -- which multiplies out to the throughput observed.
+
+So this section describes **two different problems**, and they should not be
+conflated:
+
+- **F-Stack nginx** (the 548x, edge-triggered with `EV_CLEAR`) genuinely waits
+  on a timer for data it has already received. The capture above is
+  unambiguous, and the effect weakens as concurrency rises, consistent with
+  the event loop only advancing when some other event happens to run it.
+- **This proxy** (level-triggered) is woken as often as data arrives. Its limit
+  is the arrival rate itself, bounded by the request/response cycle, not by
+  lost wakeups.
+
+The remaining question for the proxy is therefore why arrivals are limited to
+~2,456/s rather than why wakeups are missed. For nginx the question is still
+what defers its wakeup to a timer.
 
 **Why F-Stack's published numbers do not show this.** Its benchmarks are all
 small objects, where a request and its response need one or two wakeups. The
