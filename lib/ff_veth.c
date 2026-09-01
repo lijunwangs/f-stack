@@ -994,8 +994,26 @@ ff_veth_setup_interface(struct ff_veth_softc *sc, struct ff_port_cfg *cfg)
     if (cfg->hw_features.tx_tso) {
         if_setcapabilitiesbit(ifp, IFCAP_TSO, 0);
         if_sethwassistbits(ifp, CSUM_TSO, 0);
+        /*
+         * Segment count must come from the port, not from a constant.
+         *
+         * This said 35 regardless of hardware. vmxnet3 accepts 16 segments
+         * per packet and 24 for TSO, so the stack happily built chains the
+         * driver then threw away -- and that driver counts the dropped packet
+         * as transmitted, so rte_eth_tx_burst reported success. TCP advanced
+         * snd_max over data that never reached the wire, no acknowledgement
+         * could arrive, snd_una stopped, the congestion window stayed full and
+         * the connection advanced only on retransmit timeouts. A 1 MB transfer
+         * took 280 to 510 ms per request instead of 2 to 6, and the port's
+         * drop_too_many_segs counter was the only trace.
+         *
+         * Linux does not have this problem because its driver reports the real
+         * limit to the network stack, which is all this now does.
+         */
+        u_int segs = cfg->hw_features.max_tx_segs;
+
         if_sethwtsomax(ifp, IP_MAXPACKET);
-        if_sethwtsomaxsegcount(ifp, 35);
+        if_sethwtsomaxsegcount(ifp, segs ? segs : 35);
         if_sethwtsomaxsegsize(ifp, 2048);
     }
 
