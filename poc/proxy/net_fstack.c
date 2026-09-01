@@ -305,13 +305,29 @@ void net_stack_stats(char *out, size_t len)
         static int dumped;
 
         if (st.ipackets == last_ipkts) {
-            if (++quiet == 3 && !dumped) {
+            quiet++;
+            if (quiet == 3 && !dumped) {
                 dumped = 1;
                 dump_port_state();
             }
+            /*
+             * Keep saying so, every interval, for as long as it lasts. The
+             * cause of this is not known and could not be reproduced, so the
+             * practical defence is that it must be impossible to miss and
+             * trivially detectable by a supervisor: the one thing known to
+             * cure it is restarting the process.
+             */
+            if (quiet >= 3)
+                fprintf(stderr, "[poc] PORT DEAF for %d intervals -- no "
+                        "packet received; restart is the only known "
+                        "recovery\n", quiet);
         } else {
+            if (quiet >= 3)
+                fprintf(stderr, "[poc] port receiving again after %d "
+                        "intervals\n", quiet);
             last_ipkts = st.ipackets;
             quiet = 0;
+            dumped = 0;
         }
     }
 }
