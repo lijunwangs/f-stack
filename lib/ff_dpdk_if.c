@@ -1874,22 +1874,11 @@ ff_dpdk_init(int argc, char **argv)
     return 0;
 }
 
-extern unsigned long ff_ti_total, ff_ti_badsum, ff_ti_dropunlock,
-    ff_ti_drop, ff_ti_ackadv;
-
 static void
 ff_veth_input(struct ff_dpdk_if_context *ctx, struct rte_mbuf *pkt)
 {
     uint8_t rx_csum = ctx->hw_features.rx_csum;
 
-    {
-        /* FF_DEBUG_IN: how many packets reach the stack's inbound path? */
-        static uint64_t seen;
-
-        if ((seen++ % 500) == 0)
-            ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
-                "veth_input seen=%lu\n", (unsigned long)seen);
-    }
 
     /*
      * Decide whether the port's verdict on this packet can be trusted, and
@@ -2965,23 +2954,6 @@ main_loop(void *arg)
 
             idle = 0;
 
-            {
-                /*
-                 * FF_DEBUG_RX: packets the port actually handed us, against
-                 * the packets that reach the stack's input path. If these
-                 * disagree the loss is inside process_packets; if this
-                 * counter is itself tiny, the packets never arrived.
-                 */
-                static uint64_t got;
-
-                got += nb_rx;
-                if ((got / 500) != ((got - nb_rx) / 500))
-                    ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
-                        "rx_burst got=%lu | tcp_in=%lu badsum=%lu "
-                        "dropunlock=%lu drop=%lu ackadv=%lu\n",
-                        (unsigned long)got, ff_ti_total, ff_ti_badsum,
-                        ff_ti_dropunlock, ff_ti_drop, ff_ti_ackadv);
-            }
 
             /* Prefetch first packets */
             for (j = 0; j < PREFETCH_OFFSET && j < nb_rx; j++) {
