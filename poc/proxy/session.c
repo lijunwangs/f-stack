@@ -131,6 +131,18 @@ static void fail(struct session *s, const char *why)
      * transient, and the name of the one that fired is the whole diagnosis. */
     int e = errno;
 
+    /*
+     * A peer that aborts is not a fault of ours, and counting it as one made
+     * the statistics unreadable: a load generator closes every connection
+     * abortively when it exits, which showed up as a fifth of all sessions
+     * failing while the failure count sat still through the entire run.
+     */
+    if (e == ECONNRESET || e == EPIPE) {
+        stats.resets++;
+        session_close(s);
+        return;
+    }
+
     stats.failed++;
     if (stats.failed <= 20)
         fprintf(stderr, "[poc] session failed in %s: %s (errno %d: %s)\n",
@@ -433,7 +445,10 @@ static int begin_client_tls(struct session *s)
  *
  * Returns 0 when the source is exhausted or the peer pushed back, 1 when the
  * source has ended, 2 when the budget ran out and more may remain, -2 when the
- * scan matched, -1 on a real error.
+ * scan matched, -1 on a destination-side error and -3 on a source-side one.
+ * The two are worth separating: this function refills from the source itself,
+ * so a failure reading the source was previously reported against the
+ * destination and sent at least one investigation the wrong way.
  */
 static int relay_one(struct session *s, SSL *from, int from_fd, BIO *from_rbio,
                      SSL *to, int to_fd, BIO *to_wbio, struct outq *to_q)
@@ -495,7 +510,7 @@ static int relay_one(struct session *s, SSL *from, int from_fd, BIO *from_rbio,
             return 1;           /* peer closed without close_notify */
         if (n == -2)
             return 0;           /* socket drained */
-        return -1;
+        return -3;              /* the source failed, not the destination */
     }
 }
 
@@ -603,7 +618,7 @@ static void relay_pump(struct session *s)
         return;
     }
     if (r < 0) {
-        fail(s, "relay to origin");
+        fail(s, r == -3 ? "read from client" : "write to origin");
         return;
     }
     if (r == 1) {
@@ -620,7 +635,7 @@ static void relay_pump(struct session *s)
         return;
     }
     if (r < 0) {
-        fail(s, "relay to client");
+        fail(s, r == -3 ? "read from origin" : "write to client");
         return;
     }
     if (r == 1) {

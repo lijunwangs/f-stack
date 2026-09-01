@@ -57,6 +57,7 @@ struct poc_stats {
     unsigned long client_handshakes;
     unsigned long completed;
     unsigned long failed;
+    unsigned long resets;       /* peer aborted the connection, not our fault */
     unsigned long blocked;
     unsigned long rx_bytes;
     unsigned long tx_bytes;

@@ -110,10 +110,10 @@ static void print_stats(void)
     scan_stats(&sbytes, &shits);
     net_stack_stats(wire, sizeof(wire));
     printf("[poc] sessions=%lu ohs=%lu chs=%lu done=%lu failed=%lu blocked=%lu "
-           "rx=%luKB tx=%luKB certs=%lu/%lu scanned=%luKB matches=%lu "
+           "resets=%lu rx=%luKB tx=%luKB certs=%lu/%lu scanned=%luKB matches=%lu "
            "txblock=%lu txnobufs=%lu%s\n",
            s->sessions, s->origin_handshakes, s->client_handshakes,
-           s->completed, s->failed, s->blocked,
+           s->completed, s->failed, s->blocked, s->resets,
            s->rx_bytes / 1024, s->tx_bytes / 1024,
            mints, hits, sbytes / 1024, shits, s->tx_block, s->tx_nobufs,
            wire);
