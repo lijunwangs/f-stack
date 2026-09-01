@@ -116,6 +116,11 @@ struct ff_hw_features {
     uint8_t tx_csum_l4;
     uint8_t tx_tso;
     uint8_t sw_lro;
+    /*
+     * Most segments the port will accept in one packet, from the PMD's
+     * tx_desc_lim. Zero when the PMD does not say.
+     */
+    uint16_t max_tx_segs;
 };
 
 #ifdef FF_IPFW
