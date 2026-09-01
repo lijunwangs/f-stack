@@ -149,6 +149,12 @@ typedef struct vmxnet3_rx_queue {
 	struct vmxnet3_rxq_stats    stats;
 	const struct rte_memzone    *mz;
 	bool                        stopped;
+	/*
+	 * Producer index last announced to the device, per command ring. The
+	 * per-packet doorbell is batched on a 16-descriptor boundary, so the
+	 * device's view can lag; this lets the idle path notice and correct it.
+	 */
+	uint32_t                    last_rx_prod[VMXNET3_RX_CMDRING_SIZE];
 	uint16_t                    queue_id;      /**< Device RX queue index. */
 	uint16_t                    port_id;       /**< Device port identifier. */
 } vmxnet3_rx_queue_t;

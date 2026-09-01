@@ -1017,6 +1017,8 @@ rcd_done:
 			VMXNET3_WRITE_BAR0_REG(hw, hw->rx_prod_offset[ring_idx] +
 					       (rxq->queue_id * VMXNET3_REG_ALIGN),
 					       rxq->cmd_ring[ring_idx].next2fill);
+			rxq->last_rx_prod[ring_idx] =
+				rxq->cmd_ring[ring_idx].next2fill;
 		}
 
 		/* Advance to the next descriptor in comp_ring */
@@ -1044,10 +1046,37 @@ rcd_done:
 		}
 		if (unlikely(rxq->shared->ctrl.updateRxProd)) {
 			for (ring_idx = 0; ring_idx < VMXNET3_RX_CMDRING_SIZE; ring_idx++) {
-				if (posted & (1 << ring_idx))
+				/*
+				 * Announce whenever the device's view is behind
+				 * ours, not only when this pass posted
+				 * something.
+				 *
+				 * The per-packet doorbell above is batched on a
+				 * 16-descriptor boundary, so up to fifteen
+				 * refilled descriptors can go unannounced. If
+				 * receive then goes quiet with the ring already
+				 * full, this path finds nothing to post, and
+				 * with the old condition it wrote no doorbell
+				 * either -- leaving the device believing it has
+				 * nowhere to put packets while the driver
+				 * believes the ring is ready. Nothing breaks
+				 * that: no error is raised, buffers are
+				 * available, and the port stays deaf until the
+				 * rings are reinitialised by a restart.
+				 *
+				 * Comparing against the last announced value
+				 * keeps this free in steady state: it writes
+				 * only when the two have actually diverged.
+				 */
+				if ((posted & (1 << ring_idx)) ||
+				    rxq->last_rx_prod[ring_idx] !=
+				    rxq->cmd_ring[ring_idx].next2fill) {
 					VMXNET3_WRITE_BAR0_REG(hw, hw->rx_prod_offset[ring_idx] +
 							       (rxq->queue_id * VMXNET3_REG_ALIGN),
 							       rxq->cmd_ring[ring_idx].next2fill);
+					rxq->last_rx_prod[ring_idx] =
+						rxq->cmd_ring[ring_idx].next2fill;
+				}
 			}
 		}
 	}
@@ -1359,6 +1388,7 @@ vmxnet3_dev_rxtx_init(struct rte_eth_dev *dev)
 						       (rxq->queue_id * VMXNET3_REG_ALIGN),
 						       rxq->cmd_ring[j].next2fill);
 			}
+			rxq->last_rx_prod[j] = rxq->cmd_ring[j].next2fill;
 		}
 		rxq->stopped = FALSE;
 		rxq->start_seg = NULL;
