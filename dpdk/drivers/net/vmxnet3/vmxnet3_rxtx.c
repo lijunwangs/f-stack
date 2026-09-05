@@ -850,6 +850,66 @@ vmxnet3_rx_offload(struct vmxnet3_hw *hw, const Vmxnet3_RxCompDesc *rcd,
  * Process the Rx Completion Ring of given vmxnet3_rx_queue
  * for nb_pkts burst and return the number of packets received
  */
+/*
+ * Empty receive polls before asking the device whether a queue has stopped.
+ * A busy-polling worker makes roughly 10,000 of these a second, so this is
+ * some tens of seconds of complete silence -- far longer than any gap between
+ * broadcast frames on a live network.
+ */
+#define VMXNET3_RX_QUIET_POLLS 200000
+
+/*
+ * Ask the device why receive has gone silent.
+ *
+ * vmxnet3 can stop a queue on its own and report it by setting RQERR/TQERR in
+ * the event register. The only code that reads that register is
+ * vmxnet3_process_events(), which runs from dev_start and from the interrupt
+ * handler -- so under a poll-mode application with no working interrupt (uio
+ * on legacy INTx delivers none) a stopped queue is never noticed, and the port
+ * stays deaf until the process restarts.
+ *
+ * This does not fix that. It records it: when receive has been silent for long
+ * enough that even background broadcast should have arrived, ask the device for
+ * queue status and log anything wrong, once per episode.
+ */
+static void
+vmxnet3_check_queue_health(vmxnet3_rx_queue_t *rxq)
+{
+	struct vmxnet3_hw *hw = rxq->hw;
+	uint32_t events;
+	int i;
+
+	/* Shared memory, not a register read: free to look at. */
+	events = hw->shared->ecr;
+
+	/* status.stopped is only refreshed when the device is asked. */
+	VMXNET3_WRITE_BAR1_REG(hw, VMXNET3_REG_CMD, VMXNET3_CMD_GET_QUEUE_STATUS);
+
+	for (i = 0; i < hw->num_rx_queues; i++) {
+		if (!hw->rqd_start[i].status.stopped)
+			continue;
+		PMD_DRV_LOG(ERR, "rx queue %d STOPPED by device, error 0x%x, "
+			    "events 0x%x -- port is deaf until restart",
+			    i, hw->rqd_start[i].status.error, events);
+		rxq->health_reported = true;
+	}
+	for (i = 0; i < hw->num_tx_queues; i++) {
+		if (!hw->tqd_start[i].status.stopped)
+			continue;
+		PMD_DRV_LOG(ERR, "tx queue %d STOPPED by device, error 0x%x, "
+			    "events 0x%x", i, hw->tqd_start[i].status.error,
+			    events);
+		rxq->health_reported = true;
+	}
+
+	/* No queue stopped, but the device is signalling something. */
+	if (!rxq->health_reported && events != 0) {
+		PMD_DRV_LOG(ERR, "device event register 0x%x while receive is "
+			    "silent, and no queue reports stopped", events);
+		rxq->health_reported = true;
+	}
+}
+
 uint16_t
 vmxnet3_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 {
@@ -1033,9 +1093,28 @@ rcd_done:
 		}
 	}
 
+	if (nb_rxd != 0) {
+		/* Receive is alive: clear the silence tracking. */
+		rxq->quiet_polls = 0;
+		rxq->health_reported = false;
+	}
+
 	if (unlikely(nb_rxd == 0)) {
 		uint32_t avail;
 		uint32_t posted = 0;
+
+		/*
+		 * Silence long enough that even background broadcast should
+		 * have arrived. On a network with any broadcast at all this
+		 * counter is reset constantly, so reaching the threshold means
+		 * nothing is being delivered -- worth asking the device why.
+		 */
+		if (unlikely(++rxq->quiet_polls >= VMXNET3_RX_QUIET_POLLS)) {
+			rxq->quiet_polls = 0;
+			if (!rxq->health_reported)
+				vmxnet3_check_queue_health(rxq);
+		}
+
 		for (ring_idx = 0; ring_idx < VMXNET3_RX_CMDRING_SIZE; ring_idx++) {
 			avail = vmxnet3_cmd_ring_desc_avail(&rxq->cmd_ring[ring_idx]);
 			if (unlikely(avail > 0)) {

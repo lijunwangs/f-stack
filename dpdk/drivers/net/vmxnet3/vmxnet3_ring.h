@@ -155,6 +155,13 @@ typedef struct vmxnet3_rx_queue {
 	 * device's view can lag; this lets the idle path notice and correct it.
 	 */
 	uint32_t                    last_rx_prod[VMXNET3_RX_CMDRING_SIZE];
+	/*
+	 * Consecutive receive polls that returned nothing, and whether a device
+	 * queue error has already been reported. See the health check in
+	 * vmxnet3_recv_pkts().
+	 */
+	uint32_t                    quiet_polls;
+	bool                        health_reported;
 	uint16_t                    queue_id;      /**< Device RX queue index. */
 	uint16_t                    port_id;       /**< Device port identifier. */
 } vmxnet3_rx_queue_t;
